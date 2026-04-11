@@ -1,0 +1,12 @@
+[package]
+name = "replay-core"
+version = "0.1.0"
+description = "StarCraft: Brood War replay (.rep) parser"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+flate2.workspace = true
+encoding_rs.workspace = true

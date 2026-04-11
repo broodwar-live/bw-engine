@@ -1,0 +1,10 @@
+[package]
+name = "replay-wasm"
+version = "0.1.0"
+description = "WASM bindings for the BW replay parser"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+replay-core = { path = "../replay-core" }

@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/replay-core",
+    "crates/replay-wasm",
+    "crates/replay-nif",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/broodwar-live/replay-parser"
+
+[workspace.dependencies]
+thiserror = "2"
+flate2 = "1"
+encoding_rs = "0.8"
