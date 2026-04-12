@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod command;
 pub mod error;
 pub mod format;
+pub mod gamedata;
 pub mod header;
 pub mod section;
 

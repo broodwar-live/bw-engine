@@ -95,10 +95,10 @@ fn test_parse_larva_vs_mini() {
             apm.player_id, apm.apm, apm.eapm
         );
     }
-    println!("First 10 build order entries:");
-    for entry in replay.build_order.iter().take(10) {
+    println!("First 15 build order entries:");
+    for entry in replay.build_order.iter().take(15) {
         println!(
-            "  {:.0}s player {} — {:?}",
+            "  {:>5.0}s  P{}  {}",
             entry.real_seconds, entry.player_id, entry.action
         );
     }

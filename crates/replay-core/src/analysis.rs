@@ -1,4 +1,5 @@
 use crate::command::{Command, GameCommand};
+use crate::gamedata;
 
 /// Frames per second at "Fastest" game speed.
 const FPS_FASTEST: f64 = 23.81;
@@ -29,6 +30,35 @@ pub enum BuildAction {
     Upgrade(u8),
     /// Train interceptor or scarab.
     TrainFighter,
+}
+
+impl BuildAction {
+    /// Human-readable name of the action.
+    pub fn name(&self) -> &'static str {
+        match self {
+            BuildAction::Build(id)
+            | BuildAction::Train(id)
+            | BuildAction::UnitMorph(id)
+            | BuildAction::BuildingMorph(id) => gamedata::unit_name(*id),
+            BuildAction::Research(id) => gamedata::tech_name(*id),
+            BuildAction::Upgrade(id) => gamedata::upgrade_name(*id),
+            BuildAction::TrainFighter => "Interceptor/Scarab",
+        }
+    }
+}
+
+impl std::fmt::Display for BuildAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuildAction::Build(_) => write!(f, "Build {}", self.name()),
+            BuildAction::Train(_) => write!(f, "Train {}", self.name()),
+            BuildAction::UnitMorph(_) => write!(f, "Morph {}", self.name()),
+            BuildAction::BuildingMorph(_) => write!(f, "Morph {}", self.name()),
+            BuildAction::Research(_) => write!(f, "Research {}", self.name()),
+            BuildAction::Upgrade(_) => write!(f, "Upgrade {}", self.name()),
+            BuildAction::TrainFighter => write!(f, "Train {}", self.name()),
+        }
+    }
 }
 
 /// Per-player APM (actions per minute) computed over the game duration.
