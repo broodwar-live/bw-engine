@@ -41,8 +41,10 @@ impl Replay {
 
 /// Parse a replay from raw `.rep` file bytes.
 ///
-/// Supports modern format replays (1.18+, zlib compressed).
-/// Returns the full replay with header, commands, build order, and APM.
+/// Supports all replay formats:
+/// - Legacy (pre-1.18): PKWare DCL compressed
+/// - Modern (1.18–1.20): zlib compressed
+/// - Modern 1.21+ (Remastered): zlib compressed with extra post-magic gap
 pub fn parse(data: &[u8]) -> Result<Replay> {
     if data.len() < 30 {
         return Err(ReplayError::TooShort {
@@ -52,52 +54,45 @@ pub fn parse(data: &[u8]) -> Result<Replay> {
     }
 
     let fmt = format::detect(data);
-    if fmt == Format::Legacy {
-        return Err(ReplayError::LegacyFormat);
-    }
-
-    let is_121 = fmt == Format::Modern121;
 
     // Section 0: Replay ID (4 bytes after decompression).
-    let (section0, consumed0) = section::decompress_section(data, 0)?;
+    let (section0, consumed0) = section::decompress_section(data, 0, fmt)?;
     validate_magic(&section0)?;
     let mut offset = consumed0;
 
     // 1.21+ inserts a 4-byte encoded length field after section 0.
-    if is_121 {
+    if fmt == Format::Modern121 {
         offset += 4;
     }
 
-    // Section 1: Header (633 bytes after decompression).
-    let (section1, consumed1) = section::decompress_section(data, offset)?;
+    // Section 1: Header (633 bytes).
+    let (section1, consumed1) = section::decompress_section(data, offset, fmt)?;
     let mut hdr = header::parse_header(&section1)?;
     offset += consumed1;
 
-    // 1.21+ inserts a size-marker section (4 bytes) between each real section.
-    if is_121 {
-        offset += skip_size_marker(data, offset)?;
-    }
+    // All formats: skip the size-marker section between header and commands.
+    offset += skip_section(data, offset, fmt)?;
 
     // Section 2: Commands.
-    let (section2, consumed2) = section::decompress_section(data, offset)?;
+    let (section2, consumed2) = section::decompress_section(data, offset, fmt)?;
     let commands = command::parse_commands(&section2);
     offset += consumed2;
 
-    if is_121 {
-        offset += skip_size_marker(data, offset)?;
-    }
+    // Skip size-marker between commands and map data.
+    offset += skip_section(data, offset, fmt)?;
 
     // Section 3: Map data (skip).
-    let (_section3, consumed3) = section::decompress_section(data, offset)?;
+    let (_section3, consumed3) = section::decompress_section(data, offset, fmt)?;
     offset += consumed3;
 
-    if is_121 {
-        offset += skip_size_marker(data, offset)?;
+    // Skip size-marker between map data and player names.
+    if offset < data.len() {
+        offset += skip_section(data, offset, fmt)?;
     }
 
     // Section 4: Extended player names (768 bytes).
     if offset < data.len()
-        && let Ok((section4, _)) = section::decompress_section(data, offset)
+        && let Ok((section4, _)) = section::decompress_section(data, offset, fmt)
     {
         header::apply_extended_names(&mut hdr, &section4);
     }
@@ -114,10 +109,9 @@ pub fn parse(data: &[u8]) -> Result<Replay> {
     })
 }
 
-/// Skip a 1.21+ size-marker section (a mini section containing 4 bytes).
-/// Returns the number of bytes consumed.
-fn skip_size_marker(data: &[u8], offset: usize) -> Result<usize> {
-    let (_marker, consumed) = section::decompress_section(data, offset)?;
+/// Skip a section (typically a 4-byte size-marker between real sections).
+fn skip_section(data: &[u8], offset: usize, fmt: Format) -> Result<usize> {
+    let (_data, consumed) = section::decompress_section(data, offset, fmt)?;
     Ok(consumed)
 }
 
@@ -145,11 +139,5 @@ mod tests {
     fn test_parse_too_short() {
         let result = parse(&[0u8; 10]);
         assert!(matches!(result, Err(ReplayError::TooShort { .. })));
-    }
-
-    #[test]
-    fn test_parse_legacy_rejected() {
-        let result = parse(&[0u8; 30]);
-        assert!(matches!(result, Err(ReplayError::LegacyFormat)));
     }
 }

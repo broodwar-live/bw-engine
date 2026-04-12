@@ -1,4 +1,4 @@
-use replay_core::header::{Engine, Race, Speed};
+use replay_core::header::{Engine, PlayerType, Race, Speed};
 
 fn fixture(name: &str) -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -143,4 +143,84 @@ fn test_apm_over_time() {
         last.real_seconds > replay.header.duration_secs() * 0.8,
         "APM timeline should cover most of the game"
     );
+}
+
+// -- Legacy (pre-1.18, PKWare DCL) replays --
+
+#[test]
+fn test_parse_legacy_centauro_vs_djscan() {
+    let data = fixture("centauro_vs_djscan.rep");
+    let replay = replay_core::parse(&data).expect("failed to parse centauro_vs_djscan.rep");
+
+    assert_eq!(replay.header.engine, Engine::BroodWar);
+    assert!(replay.header.frame_count > 0);
+    assert!(!replay.header.map_name.is_empty());
+
+    let humans: Vec<_> = replay
+        .header
+        .players
+        .iter()
+        .filter(|p| p.player_type == PlayerType::Human)
+        .collect();
+    assert!(
+        humans.len() >= 2,
+        "expected at least 2 human players, got {}",
+        humans.len()
+    );
+
+    // This is a real ICCup ladder game — should have commands.
+    assert!(
+        replay.commands.len() > 100,
+        "expected >100 commands, got {}",
+        replay.commands.len()
+    );
+    assert!(!replay.build_order.is_empty());
+
+    println!("=== centauro_vs_djscan.rep (LEGACY) ===");
+    println!("Map: {}", replay.header.map_name);
+    println!(
+        "Duration: {:.0}s ({} frames)",
+        replay.header.duration_secs(),
+        replay.header.frame_count
+    );
+    println!("Commands: {}", replay.commands.len());
+    println!("Build order entries: {}", replay.build_order.len());
+    for p in &replay.header.players {
+        println!("  {} ({}) — {:?}", p.name, p.race.code(), p.player_type);
+    }
+    for apm in &replay.player_apm {
+        println!(
+            "  Player {}: APM={:.0} EAPM={:.0}",
+            apm.player_id, apm.apm, apm.eapm
+        );
+    }
+    println!("First 10 build order entries:");
+    for entry in replay.build_order.iter().take(10) {
+        println!(
+            "  {:>5.0}s  P{}  {}",
+            entry.real_seconds, entry.player_id, entry.action
+        );
+    }
+}
+
+#[test]
+fn test_parse_legacy_franky_vs_djscan() {
+    let data = fixture("franky_vs_djscan.rep");
+    let replay = replay_core::parse(&data).expect("failed to parse franky_vs_djscan.rep");
+
+    assert_eq!(replay.header.engine, Engine::BroodWar);
+    assert!(replay.header.frame_count > 0);
+    assert!(replay.commands.len() > 50);
+
+    println!("=== franky_vs_djscan.rep (LEGACY) ===");
+    println!("Map: {}", replay.header.map_name);
+    println!(
+        "Duration: {:.0}s ({} frames)",
+        replay.header.duration_secs(),
+        replay.header.frame_count
+    );
+    println!("Commands: {}", replay.commands.len());
+    for p in &replay.header.players {
+        println!("  {} ({}) — {:?}", p.name, p.race.code(), p.player_type);
+    }
 }

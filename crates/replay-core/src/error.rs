@@ -11,9 +11,6 @@ pub enum ReplayError {
     #[error("decompression failed: {0}")]
     Decompression(String),
 
-    #[error("unsupported replay format: legacy (pre-1.18) replays are not yet supported")]
-    LegacyFormat,
-
     #[error("invalid section {index}: {reason}")]
     InvalidSection { index: usize, reason: String },
 

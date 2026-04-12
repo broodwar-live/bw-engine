@@ -10,3 +10,4 @@ repository.workspace = true
 thiserror.workspace = true
 flate2.workspace = true
 encoding_rs.workspace = true
+explode.workspace = true
