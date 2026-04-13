@@ -48,6 +48,8 @@ pub struct GameData {
     pub flingy_types: Vec<FlingyType>,
     pub unit_types: Vec<UnitType>,
     pub weapon_types: Vec<WeaponType>,
+    /// Fallback flingy data indexed by unit_type (for SC:R .dat compatibility).
+    pub fallback_flingy: Vec<FlingyType>,
 }
 
 impl GameData {
@@ -61,6 +63,7 @@ impl GameData {
             flingy_types,
             unit_types,
             weapon_types: Vec::new(),
+            fallback_flingy: build_fallback_flingy(),
         })
     }
 
@@ -77,13 +80,28 @@ impl GameData {
             flingy_types,
             unit_types,
             weapon_types,
+            fallback_flingy: build_fallback_flingy(),
         })
     }
 
     /// Get the flingy type for a given unit type.
+    ///
+    /// If the .dat file has invalid speed data (SC:R reorganized flingy IDs),
+    /// falls back to hardcoded original BW 1.16.1 values.
     pub fn flingy_for_unit(&self, unit_type: u16) -> Option<&FlingyType> {
         let ut = self.unit_types.get(unit_type as usize)?;
-        self.flingy_types.get(ut.flingy_id as usize)
+        let parsed = self.flingy_types.get(ut.flingy_id as usize)?;
+
+        // SC:R's .dat files have speed=1 for many units (reorganized flingy IDs).
+        // If the parsed speed looks wrong, use the fallback.
+        if parsed.top_speed <= 1 && !ut.is_building {
+            if let Some(fb) = self.fallback_flingy.get(unit_type as usize) {
+                if fb.top_speed > 1 {
+                    return Some(fb);
+                }
+            }
+        }
+        Some(parsed)
     }
 
     /// Get unit type data.
@@ -308,6 +326,76 @@ fn parse_weapons_dat(data: &[u8]) -> Result<Vec<WeaponType>> {
     }
 
     Ok(types)
+}
+
+/// Build fallback flingy data from original BW 1.16.1 values.
+/// Indexed by unit_type_id (0-227). Covers all common competitive units.
+fn build_fallback_flingy() -> Vec<FlingyType> {
+    let mut table = vec![FlingyType::default(); UNIT_TYPE_COUNT];
+
+    // (unit_type, top_speed, acceleration, halt_distance, turn_rate, movement_type)
+    let entries: &[(usize, i32, i16, i32, u8, u8)] = &[
+        // Terran
+        (0, 1024, 17, 1, 40, 0),       // Marine
+        (1, 1024, 17, 1, 40, 0),        // Ghost
+        (2, 1707, 100, 40960, 40, 0),   // Vulture
+        (3, 853, 17, 1, 20, 0),         // Goliath
+        (5, 853, 17, 1, 20, 0),         // Siege Tank (Tank)
+        (7, 1280, 67, 30720, 40, 0),    // SCV
+        (8, 1707, 67, 40960, 40, 2),    // Wraith
+        (9, 1280, 50, 40960, 40, 2),    // Science Vessel
+        (11, 1400, 17, 40960, 40, 2),   // Dropship
+        (12, 640, 27, 40960, 20, 2),    // Battlecruiser
+        (30, 853, 17, 1, 20, 0),        // Siege Tank (Siege)
+        (32, 1024, 17, 1, 40, 0),       // Firebat
+        (34, 1024, 17, 1, 40, 0),       // Medic
+        (58, 1707, 67, 40960, 40, 2),   // Valkyrie
+        // Zerg
+        (35, 1, 1, 1, 1, 0),            // Larva
+        (37, 1397, 67, 20480, 27, 0),   // Zergling
+        (38, 1024, 17, 1, 27, 0),       // Hydralisk
+        (39, 1397, 67, 20480, 40, 0),   // Ultralisk
+        (41, 1280, 67, 30720, 40, 0),   // Drone
+        (42, 1067, 17, 40960, 40, 2),   // Overlord (before speed upgrade)
+        (43, 1707, 67, 40960, 40, 2),   // Mutalisk
+        (44, 640, 27, 40960, 20, 2),    // Guardian
+        (45, 1280, 50, 40960, 40, 2),   // Queen
+        (46, 853, 27, 1, 27, 0),        // Defiler
+        (47, 2133, 67, 1, 40, 2),       // Scourge
+        (50, 1024, 17, 1, 40, 0),       // Infested Terran
+        (62, 853, 27, 40960, 27, 2),    // Devourer
+        (103, 1024, 17, 1, 40, 0),      // Lurker
+        // Protoss
+        (60, 1707, 67, 40960, 40, 2),   // Corsair
+        (61, 1024, 17, 1, 40, 0),       // Dark Templar
+        (63, 853, 27, 1, 40, 2),        // Dark Archon
+        (64, 1280, 67, 30720, 40, 0),   // Probe
+        (65, 608, 17, 1, 40, 0),        // Zealot
+        (66, 853, 27, 20480, 40, 0),    // Dragoon
+        (67, 608, 17, 1, 40, 0),        // High Templar
+        (68, 1024, 17, 1, 40, 2),       // Archon
+        (69, 1400, 17, 40960, 40, 2),   // Shuttle
+        (70, 1280, 67, 40960, 40, 2),   // Scout
+        (71, 853, 27, 40960, 40, 2),    // Arbiter
+        (72, 640, 27, 40960, 20, 2),    // Carrier
+        (73, 2560, 133, 1, 40, 2),      // Interceptor
+        (83, 427, 17, 1, 20, 0),        // Reaver
+        (84, 1280, 17, 40960, 40, 2),   // Observer
+    ];
+
+    for &(uid, speed, accel, halt, turn, mt) in entries {
+        if uid < UNIT_TYPE_COUNT {
+            table[uid] = FlingyType {
+                top_speed: speed,
+                acceleration: accel,
+                halt_distance: halt,
+                turn_rate: turn,
+                movement_type: mt,
+            };
+        }
+    }
+
+    table
 }
 
 #[cfg(test)]

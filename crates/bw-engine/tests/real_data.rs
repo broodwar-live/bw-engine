@@ -95,9 +95,12 @@ fn run_full_sim(replay_name: &str) {
     let zergling = data.unit_type(37).unwrap();
     assert_eq!(zergling.hitpoints >> 8, 35, "Zergling should have 35 HP");
 
-    let marine_flingy = data.flingy_types.get(marine.flingy_id as usize).unwrap();
-    println!("  Marine flingy: speed={}, accel={}, turn={}",
-        marine_flingy.top_speed, marine_flingy.acceleration, marine_flingy.turn_rate);
+    let marine_flingy_raw = data.flingy_types.get(marine.flingy_id as usize).unwrap();
+    let marine_flingy = data.flingy_for_unit(0).unwrap();
+    println!("  Marine flingy raw: speed={}, resolved: speed={} ({:.2} px/f), accel={}, turn={}",
+        marine_flingy_raw.top_speed, marine_flingy.top_speed,
+        marine_flingy.top_speed as f64 / 256.0,
+        marine_flingy.acceleration, marine_flingy.turn_rate);
 
     let sections = chk::parse_sections(&replay.map_data).unwrap();
     let terrain = chk::extract_terrain(&sections).unwrap();

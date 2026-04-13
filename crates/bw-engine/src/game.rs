@@ -701,6 +701,7 @@ mod tests {
             flingy_types,
             unit_types,
             weapon_types,
+            fallback_flingy: Vec::new(),
         }
     }
 

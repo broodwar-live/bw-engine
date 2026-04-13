@@ -69,6 +69,7 @@ fn synthetic_game_data() -> GameData {
         flingy_types,
         unit_types,
         weapon_types,
+        fallback_flingy: Vec::new(),
     }
 }
 
