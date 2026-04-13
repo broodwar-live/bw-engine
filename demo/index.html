@@ -44,6 +44,10 @@
     <input type="file" id="flingyDat">
   </div>
   <div class="file-input">
+    <label>weapons.dat</label>
+    <input type="file" id="weaponsDat">
+  </div>
+  <div class="file-input">
     <label>CV5 tileset</label>
     <input type="file" id="cv5File">
   </div>
@@ -87,7 +91,7 @@ let speed = 4;
 let totalFrames = 0;
 
 // Cached file data.
-let repBytes = null, unitsDatBytes = null, flingyDatBytes = null;
+let repBytes = null, unitsDatBytes = null, flingyDatBytes = null, weaponsDatBytes = null;
 let cv5Bytes = null, vf4Bytes = null;
 
 const canvas = document.getElementById('canvas');
@@ -126,7 +130,8 @@ function tryBuildSim() {
   }
 
   try {
-    gameSim = new GameSim(chkData, cv5, vf4, unitsDatBytes, flingyDatBytes, repBytes);
+    const weapons = weaponsDatBytes || new Uint8Array(0);
+    gameSim = new GameSim(chkData, cv5, vf4, unitsDatBytes, flingyDatBytes, weapons, repBytes);
     info.textContent = `${replay.header.map_name} — ${replay.header.players.map(p => p.name).join(' vs ')} — ${gameSim.unitCount} initial units — Ready.`;
     controls.style.display = 'flex';
     resizeCanvas();
@@ -238,6 +243,10 @@ document.getElementById('unitsDat').addEventListener('change', async (e) => {
 });
 document.getElementById('flingyDat').addEventListener('change', async (e) => {
   flingyDatBytes = await readFile(e.target);
+  tryBuildSim();
+});
+document.getElementById('weaponsDat').addEventListener('change', async (e) => {
+  weaponsDatBytes = await readFile(e.target);
   tryBuildSim();
 });
 document.getElementById('cv5File').addEventListener('change', async (e) => {

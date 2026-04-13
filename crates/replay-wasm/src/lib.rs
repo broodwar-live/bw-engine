@@ -114,8 +114,10 @@ impl GameSim {
     ///
     /// - `chk_data`: raw CHK bytes (from `replay.map_data`).
     /// - `cv5_data` / `vf4_data`: tileset files.
-    /// - `units_dat` / `flingy_dat`: game data files.
+    /// - `units_dat` / `flingy_dat` / `weapons_dat`: game data files.
     /// - `replay_data`: raw `.rep` file bytes (re-parsed to extract commands + CHK units).
+    ///
+    /// `weapons_dat` can be empty (combat will be disabled).
     #[wasm_bindgen(constructor)]
     pub fn new(
         chk_data: &[u8],
@@ -123,12 +125,17 @@ impl GameSim {
         vf4_data: &[u8],
         units_dat: &[u8],
         flingy_dat: &[u8],
+        weapons_dat: &[u8],
         replay_data: &[u8],
     ) -> Result<GameSim, JsError> {
         let map = bw_engine::Map::from_chk(chk_data, cv5_data, vf4_data)
             .map_err(|e| JsError::new(&e.to_string()))?;
-        let data = bw_engine::GameData::from_dat(units_dat, flingy_dat)
-            .map_err(|e| JsError::new(&e.to_string()))?;
+        let data = if weapons_dat.is_empty() {
+            bw_engine::GameData::from_dat(units_dat, flingy_dat)
+        } else {
+            bw_engine::GameData::from_dat_full(units_dat, flingy_dat, weapons_dat)
+        }
+        .map_err(|e| JsError::new(&e.to_string()))?;
         let mut game = bw_engine::Game::new(map, data);
 
         // Load initial units from CHK UNIT section.
@@ -224,22 +231,33 @@ fn translate_command(cmd: &replay_core::command::Command) -> Option<bw_engine::E
         Command::RightClick {
             x, y, target_tag, ..
         } => {
-            // Right-click on ground = move. Right-click on unit = future work.
             if *target_tag == 0 || *target_tag == 0xFFFF {
                 Some(bw_engine::EngineCommand::Move { x: *x, y: *y })
             } else {
-                None
+                Some(bw_engine::EngineCommand::Attack {
+                    target_tag: *target_tag,
+                })
             }
         }
-        Command::TargetedOrder { x, y, order, .. } => {
-            // Order 0x06 = Move.
+        Command::TargetedOrder {
+            x, y, order, target_tag, ..
+        } => {
             if *order == 0x06 {
+                // Move order.
                 Some(bw_engine::EngineCommand::Move { x: *x, y: *y })
+            } else if *order == 0x0A && *target_tag != 0 && *target_tag != 0xFFFF {
+                // AttackUnit order.
+                Some(bw_engine::EngineCommand::Attack {
+                    target_tag: *target_tag,
+                })
             } else {
                 None
             }
         }
         Command::Stop { .. } => Some(bw_engine::EngineCommand::Stop),
-        _ => None, // Other commands not yet supported.
+        Command::Train { unit_type } => Some(bw_engine::EngineCommand::Train {
+            unit_type: *unit_type,
+        }),
+        _ => None,
     }
 }

@@ -74,6 +74,20 @@ pub struct UnitState {
     pub halt_distance: i32,
     pub turn_rate: u8,
     pub movement_type: u8,
+
+    // Combat
+    pub hp: i32,              // current HP in fp8
+    pub max_hp: i32,          // max HP in fp8
+    pub armor: u8,
+    pub ground_weapon: u8,    // weapon type id (130 = none)
+    pub air_weapon: u8,       // weapon type id (130 = none)
+    pub weapon_cooldown: u16, // frames until can fire again
+    pub attack_target: Option<u16>, // unit tag of attack target
+
+    // Production
+    pub build_queue: Vec<u16>,   // unit types queued for training
+    pub build_timer: u16,        // frames remaining for current build
+    pub is_building: bool,
 }
 
 impl UnitState {
@@ -191,12 +205,21 @@ mod tests {
             move_target: None,
             waypoints: Vec::new(),
             waypoint_index: 0,
-            // Marine-like movement: speed ~4 px/frame, accel ~1, turn_rate ~20
-            top_speed: 4 * 256, // 4.0 in fp8
-            acceleration: 256,  // 1.0 in fp8
+            top_speed: 4 * 256,
+            acceleration: 256,
             halt_distance: 0,
             turn_rate: 40,
             movement_type: 0,
+            hp: 40 * 256,
+            max_hp: 40 * 256,
+            armor: 0,
+            ground_weapon: 0,
+            air_weapon: 130,
+            weapon_cooldown: 0,
+            attack_target: None,
+            build_queue: Vec::new(),
+            build_timer: 0,
+            is_building: false,
         }
     }
 
