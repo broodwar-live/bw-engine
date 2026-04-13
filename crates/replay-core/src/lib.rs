@@ -22,6 +22,8 @@ pub struct Replay {
     pub build_order: Vec<BuildOrderEntry>,
     pub player_apm: Vec<PlayerApm>,
     pub timeline: Vec<TimelineSnapshot>,
+    /// Raw CHK map data (decompressed section 3). Can be fed to `bw_engine::Map::from_chk`.
+    pub map_data: Vec<u8>,
 }
 
 impl Replay {
@@ -84,8 +86,8 @@ pub fn parse(data: &[u8]) -> Result<Replay> {
     // Skip size-marker between commands and map data.
     offset += skip_section(data, offset, fmt)?;
 
-    // Section 3: Map data (skip).
-    let (_section3, consumed3) = section::decompress_section(data, offset, fmt)?;
+    // Section 3: Map data (CHK format).
+    let (map_data, consumed3) = section::decompress_section(data, offset, fmt)?;
     offset += consumed3;
 
     // Skip size-marker between map data and player names.
@@ -114,6 +116,7 @@ pub fn parse(data: &[u8]) -> Result<Replay> {
         build_order,
         player_apm,
         timeline: tl,
+        map_data,
     })
 }
 
