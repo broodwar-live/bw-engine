@@ -26,6 +26,13 @@ pub enum EngineError {
 
     #[error("megatile index out of bounds: index={index}, vf4 has {vf4_len} entries")]
     MegatileLookupOutOfBounds { index: usize, vf4_len: usize },
+
+    #[error("dat file too short for {file}: expected at least {expected} bytes, got {actual}")]
+    DatTooShort {
+        file: &'static str,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;

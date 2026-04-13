@@ -1,10 +1,24 @@
 pub mod chk;
+pub mod chk_units;
+pub mod dat;
+pub mod direction;
 pub mod error;
+pub mod fp8;
+pub mod game;
 pub mod map;
+pub mod selection;
 pub mod tile;
 pub mod tileset;
+pub mod unit;
 
+pub use chk_units::ChkUnit;
+pub use dat::GameData;
+pub use direction::Direction;
 pub use error::{EngineError, Result};
+pub use fp8::{Fp8, XY};
+pub use game::{EngineCommand, Game};
 pub use map::Map;
+pub use selection::SelectionState;
 pub use tile::{GroundHeight, MiniTile, Tile, TileFlags};
 pub use tileset::Tileset;
+pub use unit::{MoveState, UnitId, UnitState};
