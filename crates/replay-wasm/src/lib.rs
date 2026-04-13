@@ -2,8 +2,7 @@ use wasm_bindgen::prelude::*;
 
 /// Parse a `.rep` file and return the full replay as a JS object.
 ///
-/// Returns an object with: header, commands, build_order, player_apm, timeline.
-/// The `map_data` field contains the raw CHK bytes as a Uint8Array.
+/// Returns an object with: header, commands, build_order, player_apm, timeline, map_data.
 #[wasm_bindgen(js_name = "parseReplay")]
 pub fn parse_replay(data: &[u8]) -> Result<JsValue, JsError> {
     let replay = replay_core::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
@@ -18,56 +17,43 @@ pub struct GameMap {
 
 #[wasm_bindgen]
 impl GameMap {
-    /// Parse a map from raw CHK data and tileset files.
-    ///
-    /// - `chk_data`: raw CHK bytes (from replay's `map_data` or a `.scm`/`.scx` file).
-    /// - `cv5_data`: raw bytes of the tileset's `.cv5` file.
-    /// - `vf4_data`: raw bytes of the tileset's `.vf4` file.
     #[wasm_bindgen(constructor)]
     pub fn new(chk_data: &[u8], cv5_data: &[u8], vf4_data: &[u8]) -> Result<GameMap, JsError> {
-        let inner =
-            bw_engine::Map::from_chk(chk_data, cv5_data, vf4_data).map_err(|e| JsError::new(&e.to_string()))?;
+        let inner = bw_engine::Map::from_chk(chk_data, cv5_data, vf4_data)
+            .map_err(|e| JsError::new(&e.to_string()))?;
         Ok(Self { inner })
     }
 
-    /// Map width in 32px tiles.
     #[wasm_bindgen(getter)]
     pub fn width(&self) -> u16 {
         self.inner.width()
     }
 
-    /// Map height in 32px tiles.
     #[wasm_bindgen(getter)]
     pub fn height(&self) -> u16 {
         self.inner.height()
     }
 
-    /// Map width in pixels.
     #[wasm_bindgen(getter, js_name = "widthPx")]
     pub fn width_px(&self) -> u32 {
         self.inner.width_px()
     }
 
-    /// Map height in pixels.
     #[wasm_bindgen(getter, js_name = "heightPx")]
     pub fn height_px(&self) -> u32 {
         self.inner.height_px()
     }
 
-    /// Tileset name (e.g. "Badlands", "Jungle").
     #[wasm_bindgen(getter)]
     pub fn tileset(&self) -> String {
         self.inner.tileset().name().to_string()
     }
 
-    /// Whether the mini-tile at walk-grid position (mx, my) is walkable.
-    /// The walk grid is 4x the tile grid (each tile = 4x4 mini-tiles of 8px).
     #[wasm_bindgen(js_name = "isWalkable")]
     pub fn is_walkable(&self, mx: u16, my: u16) -> bool {
         self.inner.is_walkable(mx, my)
     }
 
-    /// Ground height (0=Low, 1=Middle, 2=High, 3=VeryHigh) at walk-grid position.
     #[wasm_bindgen(js_name = "groundHeight")]
     pub fn ground_height(&self, mx: u16, my: u16) -> u8 {
         self.inner
@@ -81,14 +67,11 @@ impl GameMap {
             .unwrap_or(0)
     }
 
-    /// Whether the pixel position (px, py) is walkable.
     #[wasm_bindgen(js_name = "isWalkablePx")]
     pub fn is_walkable_px(&self, px: u32, py: u32) -> bool {
         self.inner.is_walkable_px(px, py)
     }
 
-    /// Walkability grid as a flat Uint8Array (1=walkable, 0=unwalkable).
-    /// Row-major, dimensions: (width*4) x (height*4) mini-tiles.
     #[wasm_bindgen(js_name = "walkabilityGrid")]
     pub fn walkability_grid(&self) -> Vec<u8> {
         self.inner
@@ -98,8 +81,6 @@ impl GameMap {
             .collect()
     }
 
-    /// Height grid as a flat Uint8Array (0-3 per mini-tile).
-    /// Row-major, dimensions: (width*4) x (height*4) mini-tiles.
     #[wasm_bindgen(js_name = "heightGrid")]
     pub fn height_grid(&self) -> Vec<u8> {
         self.inner
@@ -112,5 +93,153 @@ impl GameMap {
                 bw_engine::GroundHeight::VeryHigh => 3,
             })
             .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Game simulation
+// ---------------------------------------------------------------------------
+
+/// A running game simulation that processes replay commands and steps frames.
+#[wasm_bindgen]
+pub struct GameSim {
+    inner: bw_engine::Game,
+    commands: Vec<replay_core::command::GameCommand>,
+    command_cursor: usize,
+}
+
+#[wasm_bindgen]
+impl GameSim {
+    /// Create a new simulation.
+    ///
+    /// - `chk_data`: raw CHK bytes (from `replay.map_data`).
+    /// - `cv5_data` / `vf4_data`: tileset files.
+    /// - `units_dat` / `flingy_dat`: game data files.
+    /// - `replay_data`: raw `.rep` file bytes (re-parsed to extract commands + CHK units).
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        chk_data: &[u8],
+        cv5_data: &[u8],
+        vf4_data: &[u8],
+        units_dat: &[u8],
+        flingy_dat: &[u8],
+        replay_data: &[u8],
+    ) -> Result<GameSim, JsError> {
+        let map = bw_engine::Map::from_chk(chk_data, cv5_data, vf4_data)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        let data = bw_engine::GameData::from_dat(units_dat, flingy_dat)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        let mut game = bw_engine::Game::new(map, data);
+
+        // Load initial units from CHK UNIT section.
+        let sections = bw_engine::chk::parse_sections(chk_data)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        let chk_units = bw_engine::chk_units::parse_chk_units(&sections)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        game.load_initial_units(&chk_units)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+
+        // Parse replay for commands.
+        let replay = replay_core::parse(replay_data)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+
+        Ok(Self {
+            inner: game,
+            commands: replay.commands,
+            command_cursor: 0,
+        })
+    }
+
+    /// Advance the simulation by one frame, applying any commands at this frame.
+    pub fn step(&mut self) {
+        let next_frame = self.inner.current_frame() + 1;
+
+        // Apply all commands for the next frame.
+        while self.command_cursor < self.commands.len()
+            && self.commands[self.command_cursor].frame <= next_frame
+        {
+            let gc = &self.commands[self.command_cursor];
+            if gc.frame == next_frame {
+                if let Some(cmd) = translate_command(&gc.command) {
+                    self.inner.apply_command(gc.player_id, &cmd);
+                }
+            }
+            self.command_cursor += 1;
+        }
+
+        self.inner.step();
+    }
+
+    /// Step to a specific frame, applying all commands along the way.
+    #[wasm_bindgen(js_name = "stepTo")]
+    pub fn step_to(&mut self, target_frame: u32) {
+        while self.inner.current_frame() < target_frame {
+            self.step();
+        }
+    }
+
+    /// Current simulation frame.
+    #[wasm_bindgen(getter, js_name = "currentFrame")]
+    pub fn current_frame(&self) -> u32 {
+        self.inner.current_frame()
+    }
+
+    /// Number of alive units.
+    #[wasm_bindgen(getter, js_name = "unitCount")]
+    pub fn unit_count(&self) -> usize {
+        self.inner.unit_count()
+    }
+
+    /// Get all alive units as a flat array: [x, y, unitType, owner, ...] repeated.
+    /// Each unit is 4 consecutive i32 values.
+    #[wasm_bindgen(js_name = "unitData")]
+    pub fn unit_data(&self) -> Vec<i32> {
+        let mut data = Vec::new();
+        for unit in self.inner.units() {
+            data.push(unit.pixel_x);
+            data.push(unit.pixel_y);
+            data.push(unit.unit_type as i32);
+            data.push(unit.owner as i32);
+        }
+        data
+    }
+}
+
+/// Translate a replay_core::Command into a bw_engine::EngineCommand.
+fn translate_command(cmd: &replay_core::command::Command) -> Option<bw_engine::EngineCommand> {
+    use replay_core::command::{Command, HotkeyAction};
+
+    match cmd {
+        Command::Select { unit_tags } => Some(bw_engine::EngineCommand::Select(unit_tags.clone())),
+        Command::SelectAdd { unit_tags } => {
+            Some(bw_engine::EngineCommand::SelectAdd(unit_tags.clone()))
+        }
+        Command::SelectRemove { unit_tags } => {
+            Some(bw_engine::EngineCommand::SelectRemove(unit_tags.clone()))
+        }
+        Command::Hotkey { action, group } => match action {
+            HotkeyAction::Assign => Some(bw_engine::EngineCommand::HotkeyAssign { group: *group }),
+            HotkeyAction::Select => Some(bw_engine::EngineCommand::HotkeyRecall { group: *group }),
+        },
+        Command::RightClick {
+            x, y, target_tag, ..
+        } => {
+            // Right-click on ground = move. Right-click on unit = future work.
+            if *target_tag == 0 || *target_tag == 0xFFFF {
+                Some(bw_engine::EngineCommand::Move { x: *x, y: *y })
+            } else {
+                None
+            }
+        }
+        Command::TargetedOrder { x, y, order, .. } => {
+            // Order 0x06 = Move.
+            if *order == 0x06 {
+                Some(bw_engine::EngineCommand::Move { x: *x, y: *y })
+            } else {
+                None
+            }
+        }
+        Command::Stop { .. } => Some(bw_engine::EngineCommand::Stop),
+        _ => None, // Other commands not yet supported.
     }
 }

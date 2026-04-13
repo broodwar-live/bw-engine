@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>broodwar.live — Replay Viewer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
+  h1 { font-size: 1.4rem; margin-bottom: 12px; color: #00d4ff; }
+  .row { display: flex; gap: 20px; margin-bottom: 12px; flex-wrap: wrap; }
+  .file-input { display: flex; flex-direction: column; gap: 4px; }
+  .file-input label { font-size: 0.8rem; color: #999; }
+  .file-input input { font-size: 0.85rem; }
+  #info { font-size: 0.85rem; margin-bottom: 8px; min-height: 1.2em; color: #aaa; }
+  #controls { margin-bottom: 8px; display: flex; gap: 8px; align-items: center; }
+  #controls button { padding: 4px 12px; font-size: 0.85rem; cursor: pointer; background: #16213e; color: #e0e0e0; border: 1px solid #444; border-radius: 3px; }
+  #controls button:hover { background: #0f3460; }
+  #controls span { font-size: 0.85rem; color: #aaa; }
+  canvas { border: 1px solid #333; background: #111; display: block; }
+  .legend { display: flex; gap: 12px; margin-top: 6px; font-size: 0.75rem; color: #888; }
+  .legend span::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .p0::before { background: #4fc3f7; }
+  .p1::before { background: #ef5350; }
+  .p2::before { background: #66bb6a; }
+  .p3::before { background: #ffa726; }
+  .neutral::before { background: #666; }
+</style>
+</head>
+<body>
+
+<h1>broodwar.live Replay Viewer</h1>
+
+<div class="row">
+  <div class="file-input">
+    <label>Replay (.rep)</label>
+    <input type="file" id="repFile" accept=".rep">
+  </div>
+  <div class="file-input">
+    <label>units.dat</label>
+    <input type="file" id="unitsDat">
+  </div>
+  <div class="file-input">
+    <label>flingy.dat</label>
+    <input type="file" id="flingyDat">
+  </div>
+  <div class="file-input">
+    <label>CV5 tileset</label>
+    <input type="file" id="cv5File">
+  </div>
+  <div class="file-input">
+    <label>VF4 tileset</label>
+    <input type="file" id="vf4File">
+  </div>
+</div>
+
+<div id="info">Load a .rep file to begin.</div>
+<div id="controls" style="display:none">
+  <button id="playBtn">Play</button>
+  <button id="pauseBtn">Pause</button>
+  <button id="resetBtn">Reset</button>
+  <span id="frameInfo">Frame 0</span>
+  <input type="range" id="speedSlider" min="1" max="32" value="4" style="width:120px">
+  <span id="speedLabel">4x</span>
+</div>
+<canvas id="canvas" width="640" height="480"></canvas>
+<div class="legend">
+  <span class="p0">Player 1</span>
+  <span class="p1">Player 2</span>
+  <span class="p2">Player 3</span>
+  <span class="p3">Player 4</span>
+  <span class="neutral">Neutral/Resource</span>
+</div>
+
+<script type="module">
+import init, { parseReplay, GameMap, GameSim } from '../pkg/replay_wasm.js';
+
+const PLAYER_COLORS = ['#4fc3f7','#ef5350','#66bb6a','#ffa726','#ab47bc','#78909c','#ffee58','#8d6e63'];
+const NEUTRAL_COLOR = '#555';
+
+let wasm;
+let replay = null;
+let gameSim = null;
+let gameMap = null;
+let playing = false;
+let animId = null;
+let speed = 4;
+let totalFrames = 0;
+
+// Cached file data.
+let repBytes = null, unitsDatBytes = null, flingyDatBytes = null;
+let cv5Bytes = null, vf4Bytes = null;
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const info = document.getElementById('info');
+const controls = document.getElementById('controls');
+const frameInfo = document.getElementById('frameInfo');
+const speedSlider = document.getElementById('speedSlider');
+const speedLabel = document.getElementById('speedLabel');
+
+async function readFile(input) {
+  const file = input.files[0];
+  if (!file) return null;
+  return new Uint8Array(await file.arrayBuffer());
+}
+
+function tryBuildSim() {
+  if (!repBytes || !replay) return;
+  if (!unitsDatBytes || !flingyDatBytes) {
+    info.textContent = `${replay.header.map_name} — ${replay.header.players.map(p => p.name).join(' vs ')} (${totalFrames} frames). Add units.dat + flingy.dat for simulation.`;
+    return;
+  }
+
+  const chkData = new Uint8Array(replay.map_data);
+  const cv5 = cv5Bytes || new Uint8Array(0);
+  const vf4 = vf4Bytes || new Uint8Array(0);
+
+  // Build map if tileset data available.
+  if (cv5Bytes && vf4Bytes) {
+    try {
+      gameMap = new GameMap(chkData, cv5, vf4);
+    } catch (e) {
+      console.warn('Map parse failed:', e);
+      gameMap = null;
+    }
+  }
+
+  try {
+    gameSim = new GameSim(chkData, cv5, vf4, unitsDatBytes, flingyDatBytes, repBytes);
+    info.textContent = `${replay.header.map_name} — ${replay.header.players.map(p => p.name).join(' vs ')} — ${gameSim.unitCount} initial units — Ready.`;
+    controls.style.display = 'flex';
+    resizeCanvas();
+    drawFrame();
+  } catch (e) {
+    info.textContent = `Sim init error: ${e.message}`;
+    console.error(e);
+  }
+}
+
+function resizeCanvas() {
+  const mapW = replay.header.map_width * 32;
+  const mapH = replay.header.map_height * 32;
+  const maxW = Math.min(800, window.innerWidth - 40);
+  const scale = maxW / mapW;
+  canvas.width = Math.round(mapW * scale);
+  canvas.height = Math.round(mapH * scale);
+  canvas.dataset.scale = scale;
+  canvas.dataset.mapW = mapW;
+  canvas.dataset.mapH = mapH;
+}
+
+function drawFrame() {
+  if (!gameSim) return;
+  const scale = parseFloat(canvas.dataset.scale);
+  const mapW = parseFloat(canvas.dataset.mapW);
+  const mapH = parseFloat(canvas.dataset.mapH);
+
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Draw walkability if map available.
+  if (gameMap) {
+    const mw = gameMap.width * 4;
+    const mh = gameMap.height * 4;
+    const grid = gameMap.walkabilityGrid();
+    const tileScale = scale * 8; // each mini-tile = 8px
+    for (let my = 0; my < mh; my++) {
+      for (let mx = 0; mx < mw; mx++) {
+        if (!grid[my * mw + mx]) {
+          ctx.fillStyle = 'rgba(60,30,30,0.5)';
+          ctx.fillRect(mx * tileScale, my * tileScale, tileScale, tileScale);
+        }
+      }
+    }
+  }
+
+  // Draw units.
+  const data = gameSim.unitData();
+  const unitCount = data.length / 4;
+  for (let i = 0; i < unitCount; i++) {
+    const px = data[i * 4];
+    const py = data[i * 4 + 1];
+    const unitType = data[i * 4 + 2];
+    const owner = data[i * 4 + 3];
+
+    const sx = px * scale;
+    const sy = py * scale;
+
+    // Buildings (unit type 106-227 roughly) get squares, units get circles.
+    const isBuilding = unitType >= 106 && unitType <= 202;
+    const isResource = unitType >= 176 && unitType <= 199;
+    const color = owner >= 8 || isResource ? NEUTRAL_COLOR : (PLAYER_COLORS[owner] || NEUTRAL_COLOR);
+    const radius = isBuilding ? 4 : 2.5;
+
+    ctx.fillStyle = color;
+    if (isBuilding) {
+      ctx.fillRect(sx - radius, sy - radius, radius * 2, radius * 2);
+    } else {
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  frameInfo.textContent = `Frame ${gameSim.currentFrame} / ${totalFrames} — ${unitCount} units`;
+}
+
+function animate() {
+  if (!playing || !gameSim) return;
+  for (let i = 0; i < speed; i++) {
+    if (gameSim.currentFrame >= totalFrames) {
+      playing = false;
+      return;
+    }
+    gameSim.step();
+  }
+  drawFrame();
+  animId = requestAnimationFrame(animate);
+}
+
+// File input handlers.
+document.getElementById('repFile').addEventListener('change', async (e) => {
+  repBytes = await readFile(e.target);
+  if (!repBytes) return;
+  try {
+    replay = parseReplay(repBytes);
+    totalFrames = replay.header.frame_count;
+    info.textContent = `Parsed: ${replay.header.map_name} — ${replay.header.players.map(p => p.name).join(' vs ')} (${totalFrames} frames)`;
+    tryBuildSim();
+  } catch (err) {
+    info.textContent = `Parse error: ${err.message}`;
+  }
+});
+
+document.getElementById('unitsDat').addEventListener('change', async (e) => {
+  unitsDatBytes = await readFile(e.target);
+  tryBuildSim();
+});
+document.getElementById('flingyDat').addEventListener('change', async (e) => {
+  flingyDatBytes = await readFile(e.target);
+  tryBuildSim();
+});
+document.getElementById('cv5File').addEventListener('change', async (e) => {
+  cv5Bytes = await readFile(e.target);
+  tryBuildSim();
+});
+document.getElementById('vf4File').addEventListener('change', async (e) => {
+  vf4Bytes = await readFile(e.target);
+  tryBuildSim();
+});
+
+document.getElementById('playBtn').addEventListener('click', () => {
+  if (gameSim.currentFrame >= totalFrames) {
+    gameSim = null;
+    tryBuildSim(); // Reset.
+  }
+  playing = true;
+  animate();
+});
+document.getElementById('pauseBtn').addEventListener('click', () => {
+  playing = false;
+  if (animId) cancelAnimationFrame(animId);
+});
+document.getElementById('resetBtn').addEventListener('click', () => {
+  playing = false;
+  if (animId) cancelAnimationFrame(animId);
+  gameSim = null;
+  tryBuildSim();
+  drawFrame();
+});
+speedSlider.addEventListener('input', () => {
+  speed = parseInt(speedSlider.value);
+  speedLabel.textContent = `${speed}x`;
+});
+
+// Init WASM.
+init().then(() => { wasm = true; });
+</script>
+</body>
+</html>
