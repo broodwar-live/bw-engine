@@ -120,6 +120,218 @@ impl TilesetData {
     }
 }
 
+// ---------------------------------------------------------------------------
+// VX4 — megatile → mini-tile graphic references (32 bytes per entry)
+// ---------------------------------------------------------------------------
+
+/// VX4 entry size in bytes (16 x u16 mini-tile image references).
+pub const VX4_ENTRY_SIZE: usize = 32;
+
+/// A VX4 entry: 16 references to VR4 mini-tile images for a 4x4 grid.
+/// Each reference is a u16 where bits 0-14 are the VR4 index and bit 15
+/// indicates horizontal flip.
+#[derive(Debug, Clone)]
+pub struct Vx4Entry {
+    /// Raw mini-tile references (VR4 index + flip bit).
+    pub refs: [u16; 16],
+}
+
+impl Vx4Entry {
+    /// Get the VR4 image index for a mini-tile (0-15).
+    #[must_use]
+    pub fn vr4_index(&self, mini_tile: usize) -> u16 {
+        self.refs[mini_tile] >> 1
+    }
+
+    /// Whether a mini-tile should be horizontally flipped.
+    #[must_use]
+    pub fn is_flipped(&self, mini_tile: usize) -> bool {
+        self.refs[mini_tile] & 1 != 0
+    }
+}
+
+/// Parsed VX4 data.
+pub struct Vx4Data {
+    entries: Vec<Vx4Entry>,
+}
+
+impl Vx4Data {
+    /// Parse from raw VX4 file bytes.
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if !data.len().is_multiple_of(VX4_ENTRY_SIZE) {
+            return Err(EngineError::TilesetDataTooShort {
+                file: "vx4",
+                expected: VX4_ENTRY_SIZE,
+                actual: data.len() % VX4_ENTRY_SIZE,
+            });
+        }
+
+        let count = data.len() / VX4_ENTRY_SIZE;
+        let mut entries = Vec::with_capacity(count);
+
+        for i in 0..count {
+            let base = i * VX4_ENTRY_SIZE;
+            let mut refs = [0u16; 16];
+            for (j, slot) in refs.iter_mut().enumerate() {
+                *slot = read_u16_le(data, base + j * 2);
+            }
+            entries.push(Vx4Entry { refs });
+        }
+
+        Ok(Self { entries })
+    }
+
+    /// Get a VX4 entry by megatile index.
+    pub fn get(&self, index: usize) -> Option<&Vx4Entry> {
+        self.entries.get(index)
+    }
+
+    /// Number of entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VR4 — 8x8 mini-tile pixel data (64 bytes per entry)
+// ---------------------------------------------------------------------------
+
+/// VR4 entry size in bytes (8x8 = 64 palette indices).
+pub const VR4_ENTRY_SIZE: usize = 64;
+
+/// A single 8x8 mini-tile: 64 palette indices, row-major.
+#[derive(Debug, Clone)]
+pub struct Vr4Entry {
+    /// 64 palette indices (8 rows of 8 pixels).
+    pub pixels: [u8; 64],
+}
+
+impl Vr4Entry {
+    /// Get the pixel at (x, y) where 0 <= x,y < 8.
+    #[must_use]
+    pub fn pixel(&self, x: usize, y: usize) -> u8 {
+        self.pixels[y * 8 + x]
+    }
+
+    /// Get a row of 8 pixels.
+    #[must_use]
+    pub fn row(&self, y: usize) -> &[u8] {
+        &self.pixels[y * 8..(y + 1) * 8]
+    }
+}
+
+/// Parsed VR4 data.
+pub struct Vr4Data {
+    entries: Vec<Vr4Entry>,
+}
+
+impl Vr4Data {
+    /// Parse from raw VR4 file bytes.
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if !data.len().is_multiple_of(VR4_ENTRY_SIZE) {
+            return Err(EngineError::TilesetDataTooShort {
+                file: "vr4",
+                expected: VR4_ENTRY_SIZE,
+                actual: data.len() % VR4_ENTRY_SIZE,
+            });
+        }
+
+        let count = data.len() / VR4_ENTRY_SIZE;
+        let mut entries = Vec::with_capacity(count);
+
+        for i in 0..count {
+            let base = i * VR4_ENTRY_SIZE;
+            let mut pixels = [0u8; 64];
+            pixels.copy_from_slice(&data[base..base + 64]);
+            entries.push(Vr4Entry { pixels });
+        }
+
+        Ok(Self { entries })
+    }
+
+    /// Get a VR4 entry by index.
+    pub fn get(&self, index: usize) -> Option<&Vr4Entry> {
+        self.entries.get(index)
+    }
+
+    /// Number of entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WPE — 256-color palette (1024 bytes: 256 x RGBX)
+// ---------------------------------------------------------------------------
+
+/// WPE file size (256 colors x 4 bytes each).
+pub const WPE_SIZE: usize = 1024;
+
+/// A single palette color.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PaletteColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+/// A 256-color palette parsed from a WPE file.
+#[derive(Debug, Clone)]
+pub struct Palette {
+    pub colors: [PaletteColor; 256],
+}
+
+impl Palette {
+    /// Parse from raw WPE file bytes (1024 bytes: 256 x RGBX).
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < WPE_SIZE {
+            return Err(EngineError::TilesetDataTooShort {
+                file: "wpe",
+                expected: WPE_SIZE,
+                actual: data.len(),
+            });
+        }
+
+        let mut colors = [PaletteColor::default(); 256];
+        for (i, color) in colors.iter_mut().enumerate() {
+            let base = i * 4;
+            color.r = data[base];
+            color.g = data[base + 1];
+            color.b = data[base + 2];
+            // data[base + 3] is padding (unused).
+        }
+
+        Ok(Self { colors })
+    }
+
+    /// Look up a color by palette index.
+    #[must_use]
+    pub fn color(&self, index: u8) -> PaletteColor {
+        self.colors[index as usize]
+    }
+
+    /// Convert a palette index to an RGBA u32 (0xRRGGBBAA, alpha=255).
+    #[must_use]
+    pub fn to_rgba(&self, index: u8) -> u32 {
+        let c = self.colors[index as usize];
+        u32::from_be_bytes([c.r, c.g, c.b, 0xFF])
+    }
+}
+
 fn read_u16_le(data: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([data[offset], data[offset + 1]])
 }
@@ -287,5 +499,92 @@ mod tests {
         let raw: u16 = (3 << 4) | 7;
         assert_eq!((raw >> 4) & 0x7FF, 3);
         assert_eq!(raw & 0xF, 7);
+    }
+
+    // -- VX4 tests --
+
+    #[test]
+    fn test_parse_vx4() {
+        let mut data = vec![0u8; VX4_ENTRY_SIZE];
+        // Mini-tile 0: VR4 index 42, not flipped → (42 << 1) | 0 = 84
+        data[0..2].copy_from_slice(&84u16.to_le_bytes());
+        // Mini-tile 1: VR4 index 10, flipped → (10 << 1) | 1 = 21
+        data[2..4].copy_from_slice(&21u16.to_le_bytes());
+
+        let vx4 = Vx4Data::from_bytes(&data).unwrap();
+        assert_eq!(vx4.len(), 1);
+        let entry = vx4.get(0).unwrap();
+        assert_eq!(entry.vr4_index(0), 42);
+        assert!(!entry.is_flipped(0));
+        assert_eq!(entry.vr4_index(1), 10);
+        assert!(entry.is_flipped(1));
+    }
+
+    #[test]
+    fn test_parse_vx4_bad_size() {
+        assert!(Vx4Data::from_bytes(&[0u8; 31]).is_err());
+    }
+
+    // -- VR4 tests --
+
+    #[test]
+    fn test_parse_vr4() {
+        let mut data = vec![0u8; VR4_ENTRY_SIZE];
+        // Set pixel (3, 2) = palette index 42.
+        data[2 * 8 + 3] = 42;
+
+        let vr4 = Vr4Data::from_bytes(&data).unwrap();
+        assert_eq!(vr4.len(), 1);
+        let entry = vr4.get(0).unwrap();
+        assert_eq!(entry.pixel(3, 2), 42);
+        assert_eq!(entry.pixel(0, 0), 0);
+    }
+
+    #[test]
+    fn test_vr4_row() {
+        let mut data = vec![0u8; VR4_ENTRY_SIZE];
+        for i in 0..8 {
+            data[3 * 8 + i] = i as u8 + 1; // row 3: [1,2,3,4,5,6,7,8]
+        }
+        let vr4 = Vr4Data::from_bytes(&data).unwrap();
+        assert_eq!(vr4.get(0).unwrap().row(3), &[1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn test_parse_vr4_bad_size() {
+        assert!(Vr4Data::from_bytes(&[0u8; 63]).is_err());
+    }
+
+    // -- WPE tests --
+
+    #[test]
+    fn test_parse_wpe() {
+        let mut data = vec![0u8; WPE_SIZE];
+        // Color 0: red (255, 0, 0, padding)
+        data[0] = 255;
+        // Color 1: green (0, 255, 0, padding)
+        data[5] = 255;
+        // Color 255: blue (0, 0, 255, padding)
+        data[255 * 4 + 2] = 255;
+
+        let palette = Palette::from_bytes(&data).unwrap();
+        assert_eq!(palette.color(0), PaletteColor { r: 255, g: 0, b: 0 });
+        assert_eq!(palette.color(1), PaletteColor { r: 0, g: 255, b: 0 });
+        assert_eq!(palette.color(255), PaletteColor { r: 0, g: 0, b: 255 });
+    }
+
+    #[test]
+    fn test_wpe_to_rgba() {
+        let mut data = vec![0u8; WPE_SIZE];
+        data[0] = 0xAA;
+        data[1] = 0xBB;
+        data[2] = 0xCC;
+        let palette = Palette::from_bytes(&data).unwrap();
+        assert_eq!(palette.to_rgba(0), 0xAABBCCFF);
+    }
+
+    #[test]
+    fn test_parse_wpe_too_short() {
+        assert!(Palette::from_bytes(&[0u8; 100]).is_err());
     }
 }

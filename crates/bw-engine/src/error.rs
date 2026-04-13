@@ -33,6 +33,21 @@ pub enum EngineError {
         expected: usize,
         actual: usize,
     },
+
+    #[error("invalid MPQ header: {0}")]
+    MpqInvalidHeader(String),
+
+    #[error("file not found in MPQ archive: {name}")]
+    MpqFileNotFound { name: String },
+
+    #[error("MPQ decompression failed: {0}")]
+    MpqDecompression(String),
+
+    #[error("invalid TBL data: {0}")]
+    InvalidTbl(String),
+
+    #[error("invalid GRP data: {0}")]
+    InvalidGrp(String),
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;

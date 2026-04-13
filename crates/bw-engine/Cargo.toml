@@ -9,6 +9,9 @@ repository.workspace = true
 [dependencies]
 thiserror.workspace = true
 bitflags.workspace = true
+flate2.workspace = true
+explode.workspace = true
+encoding_rs.workspace = true
 
 [dev-dependencies]
 replay-core = { path = "../replay-core" }

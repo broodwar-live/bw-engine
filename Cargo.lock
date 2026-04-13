@@ -31,6 +31,9 @@ name = "bw-engine"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "encoding_rs",
+ "explode",
+ "flate2",
  "replay-core",
  "thiserror",
 ]

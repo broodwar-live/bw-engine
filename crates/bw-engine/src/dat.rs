@@ -48,14 +48,17 @@ pub struct GameData {
     pub flingy_types: Vec<FlingyType>,
     pub unit_types: Vec<UnitType>,
     pub weapon_types: Vec<WeaponType>,
+    pub tech_types: Vec<TechType>,
+    pub upgrade_types: Vec<UpgradeType>,
+    pub order_types: Vec<OrderType>,
     /// Fallback flingy data indexed by unit_type (for SC:R .dat compatibility).
     pub fallback_flingy: Vec<FlingyType>,
 }
 
 impl GameData {
-    /// Parse from raw dat file bytes.
+    /// Parse from raw dat file bytes (units + flingy only).
     ///
-    /// `weapons_dat` may be empty — combat data will be zeroed.
+    /// Combat, tech, upgrade, and order data will be empty.
     pub fn from_dat(units_dat: &[u8], flingy_dat: &[u8]) -> Result<Self> {
         let flingy_types = parse_flingy_dat(flingy_dat)?;
         let unit_types = parse_units_dat(units_dat)?;
@@ -63,6 +66,9 @@ impl GameData {
             flingy_types,
             unit_types,
             weapon_types: Vec::new(),
+            tech_types: Vec::new(),
+            upgrade_types: Vec::new(),
+            order_types: Vec::new(),
             fallback_flingy: build_fallback_flingy(),
         })
     }
@@ -76,6 +82,35 @@ impl GameData {
             flingy_types,
             unit_types,
             weapon_types,
+            tech_types: Vec::new(),
+            upgrade_types: Vec::new(),
+            order_types: Vec::new(),
+            fallback_flingy: build_fallback_flingy(),
+        })
+    }
+
+    /// Parse all dat files for complete game data.
+    pub fn from_dat_all(
+        units_dat: &[u8],
+        flingy_dat: &[u8],
+        weapons_dat: &[u8],
+        techdata_dat: &[u8],
+        upgrades_dat: &[u8],
+        orders_dat: &[u8],
+    ) -> Result<Self> {
+        let flingy_types = parse_flingy_dat(flingy_dat)?;
+        let unit_types = parse_units_dat(units_dat)?;
+        let weapon_types = parse_weapons_dat(weapons_dat)?;
+        let tech_types = parse_techdata_dat(techdata_dat)?;
+        let upgrade_types = parse_upgrades_dat(upgrades_dat)?;
+        let order_types = parse_orders_dat(orders_dat)?;
+        Ok(Self {
+            flingy_types,
+            unit_types,
+            weapon_types,
+            tech_types,
+            upgrade_types,
+            order_types,
             fallback_flingy: build_fallback_flingy(),
         })
     }
@@ -111,6 +146,21 @@ impl GameData {
             return None; // 130 = "None" weapon
         }
         self.weapon_types.get(id as usize)
+    }
+
+    /// Get tech type data.
+    pub fn tech_type(&self, id: u8) -> Option<&TechType> {
+        self.tech_types.get(id as usize)
+    }
+
+    /// Get upgrade type data.
+    pub fn upgrade_type(&self, id: u8) -> Option<&UpgradeType> {
+        self.upgrade_types.get(id as usize)
+    }
+
+    /// Get order type data.
+    pub fn order_type(&self, id: u8) -> Option<&OrderType> {
+        self.order_types.get(id as usize)
     }
 }
 
@@ -344,6 +394,208 @@ fn parse_weapons_dat(data: &[u8]) -> Result<Vec<WeaponType>> {
     Ok(types)
 }
 
+// ---------------------------------------------------------------------------
+// techdata.dat — parallel array offsets (44 entries)
+// ---------------------------------------------------------------------------
+
+const TECH_COUNT: usize = 44;
+const T: usize = TECH_COUNT;
+
+const T_MINERAL_COST: usize = 0; // 44 x u16
+const T_GAS_COST: usize = T_MINERAL_COST + T * 2; // 44 x u16
+const T_RESEARCH_TIME: usize = T_GAS_COST + T * 2; // 44 x u16
+const T_ENERGY_COST: usize = T_RESEARCH_TIME + T * 2; // 44 x u16
+const T_UNKNOWN: usize = T_ENERGY_COST + T * 2; // 44 x u32
+const T_ICON: usize = T_UNKNOWN + T * 4; // 44 x u16
+const T_LABEL: usize = T_ICON + T * 2; // 44 x u16
+const T_RACE: usize = T_LABEL + T * 2; // 44 x u8
+const T_UNUSED: usize = T_RACE + T; // 44 x u8
+const T_BROOD_WAR: usize = T_UNUSED + T; // 44 x u8
+
+const TECHDATA_DAT_MIN_SIZE: usize = T_BROOD_WAR + T;
+
+/// Tech research data parsed from techdata.dat.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TechType {
+    pub mineral_cost: u16,
+    pub gas_cost: u16,
+    pub research_time: u16,
+    pub energy_cost: u16,
+    pub label: u16,
+    pub race: u8,
+    pub brood_war: bool,
+}
+
+fn parse_techdata_dat(data: &[u8]) -> Result<Vec<TechType>> {
+    if data.len() < TECHDATA_DAT_MIN_SIZE {
+        return Err(EngineError::DatTooShort {
+            file: "techdata.dat",
+            expected: TECHDATA_DAT_MIN_SIZE,
+            actual: data.len(),
+        });
+    }
+
+    let mut types = Vec::with_capacity(T);
+    for i in 0..T {
+        types.push(TechType {
+            mineral_cost: read_u16_le(data, T_MINERAL_COST + i * 2),
+            gas_cost: read_u16_le(data, T_GAS_COST + i * 2),
+            research_time: read_u16_le(data, T_RESEARCH_TIME + i * 2),
+            energy_cost: read_u16_le(data, T_ENERGY_COST + i * 2),
+            label: read_u16_le(data, T_LABEL + i * 2),
+            race: data[T_RACE + i],
+            brood_war: data[T_BROOD_WAR + i] != 0,
+        });
+    }
+
+    Ok(types)
+}
+
+// ---------------------------------------------------------------------------
+// upgrades.dat — parallel array offsets (61 entries)
+// ---------------------------------------------------------------------------
+
+const UPGRADE_COUNT: usize = 61;
+const UG: usize = UPGRADE_COUNT;
+
+const UG_MINERAL_BASE: usize = 0; // 61 x u16
+const UG_MINERAL_FACTOR: usize = UG_MINERAL_BASE + UG * 2; // 61 x u16
+const UG_GAS_BASE: usize = UG_MINERAL_FACTOR + UG * 2; // 61 x u16
+const UG_GAS_FACTOR: usize = UG_GAS_BASE + UG * 2; // 61 x u16
+const UG_TIME_BASE: usize = UG_GAS_FACTOR + UG * 2; // 61 x u16
+const UG_TIME_FACTOR: usize = UG_TIME_BASE + UG * 2; // 61 x u16
+const UG_UNKNOWN: usize = UG_TIME_FACTOR + UG * 2; // 61 x u16
+const UG_ICON: usize = UG_UNKNOWN + UG * 2; // 61 x u16
+const UG_LABEL: usize = UG_ICON + UG * 2; // 61 x u16
+const UG_RACE: usize = UG_LABEL + UG * 2; // 61 x u8
+const UG_MAX_REPEATS: usize = UG_RACE + UG; // 61 x u8
+const UG_BROOD_WAR: usize = UG_MAX_REPEATS + UG; // 61 x u8
+
+const UPGRADES_DAT_MIN_SIZE: usize = UG_BROOD_WAR + UG;
+
+/// Upgrade data parsed from upgrades.dat.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UpgradeType {
+    pub mineral_base: u16,
+    pub mineral_factor: u16,
+    pub gas_base: u16,
+    pub gas_factor: u16,
+    pub time_base: u16,
+    pub time_factor: u16,
+    pub label: u16,
+    pub race: u8,
+    pub max_repeats: u8,
+    pub brood_war: bool,
+}
+
+impl UpgradeType {
+    /// Cost at a given level (1-indexed).
+    pub fn cost_at_level(&self, level: u8) -> (u16, u16) {
+        let l = level.saturating_sub(1) as u16;
+        (
+            self.mineral_base + self.mineral_factor * l,
+            self.gas_base + self.gas_factor * l,
+        )
+    }
+
+    /// Research time at a given level (1-indexed), in frames.
+    pub fn time_at_level(&self, level: u8) -> u16 {
+        let l = level.saturating_sub(1) as u16;
+        self.time_base + self.time_factor * l
+    }
+}
+
+fn parse_upgrades_dat(data: &[u8]) -> Result<Vec<UpgradeType>> {
+    if data.len() < UPGRADES_DAT_MIN_SIZE {
+        return Err(EngineError::DatTooShort {
+            file: "upgrades.dat",
+            expected: UPGRADES_DAT_MIN_SIZE,
+            actual: data.len(),
+        });
+    }
+
+    let mut types = Vec::with_capacity(UG);
+    for i in 0..UG {
+        types.push(UpgradeType {
+            mineral_base: read_u16_le(data, UG_MINERAL_BASE + i * 2),
+            mineral_factor: read_u16_le(data, UG_MINERAL_FACTOR + i * 2),
+            gas_base: read_u16_le(data, UG_GAS_BASE + i * 2),
+            gas_factor: read_u16_le(data, UG_GAS_FACTOR + i * 2),
+            time_base: read_u16_le(data, UG_TIME_BASE + i * 2),
+            time_factor: read_u16_le(data, UG_TIME_FACTOR + i * 2),
+            label: read_u16_le(data, UG_LABEL + i * 2),
+            race: data[UG_RACE + i],
+            max_repeats: data[UG_MAX_REPEATS + i],
+            brood_war: data[UG_BROOD_WAR + i] != 0,
+        });
+    }
+
+    Ok(types)
+}
+
+// ---------------------------------------------------------------------------
+// orders.dat — parallel array offsets (189 entries)
+// ---------------------------------------------------------------------------
+
+const ORDER_COUNT: usize = 189;
+const O: usize = ORDER_COUNT;
+
+const O_LABEL: usize = 0; // 189 x u16
+const O_USE_WEAPON: usize = O_LABEL + O * 2; // 189 x u8
+const O_SECONDARY: usize = O_USE_WEAPON + O; // 189 x u8 (unused)
+const O_NON_SUBUNIT: usize = O_SECONDARY + O; // 189 x u8 (unused)
+const O_INTERRUPTABLE: usize = O_NON_SUBUNIT + O; // 189 x u8
+const O_STOP_MOVING: usize = O_INTERRUPTABLE + O; // 189 x u8
+const O_CAN_BE_QUEUED: usize = O_STOP_MOVING + O; // 189 x u8
+const O_KEEP_TARGET: usize = O_CAN_BE_QUEUED + O; // 189 x u8
+const O_TERRAIN_CLIP: usize = O_KEEP_TARGET + O; // 189 x u8
+const O_FLEEING: usize = O_TERRAIN_CLIP + O; // 189 x u8
+const O_REQUIRES_MOVE: usize = O_FLEEING + O; // 189 x u8
+const O_ORDER_WEAPON: usize = O_REQUIRES_MOVE + O; // 189 x u8
+const O_ANIMATION: usize = O_ORDER_WEAPON + O; // 189 x u8
+const O_HIGHLIGHT: usize = O_ANIMATION + O; // 189 x u16
+const O_UNKNOWN: usize = O_HIGHLIGHT + O * 2; // 189 x u16
+const O_TARGETING: usize = O_UNKNOWN + O * 2; // 189 x u8
+
+const ORDERS_DAT_MIN_SIZE: usize = O_TARGETING + O;
+
+/// Order data parsed from orders.dat.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OrderType {
+    pub label: u16,
+    pub use_weapon_targeting: bool,
+    pub interruptable: bool,
+    pub can_be_queued: bool,
+    pub keep_target: bool,
+    pub requires_move: bool,
+    pub order_weapon: u8,
+}
+
+fn parse_orders_dat(data: &[u8]) -> Result<Vec<OrderType>> {
+    if data.len() < ORDERS_DAT_MIN_SIZE {
+        return Err(EngineError::DatTooShort {
+            file: "orders.dat",
+            expected: ORDERS_DAT_MIN_SIZE,
+            actual: data.len(),
+        });
+    }
+
+    let mut types = Vec::with_capacity(O);
+    for i in 0..O {
+        types.push(OrderType {
+            label: read_u16_le(data, O_LABEL + i * 2),
+            use_weapon_targeting: data[O_USE_WEAPON + i] != 0,
+            interruptable: data[O_INTERRUPTABLE + i] != 0,
+            can_be_queued: data[O_CAN_BE_QUEUED + i] != 0,
+            keep_target: data[O_KEEP_TARGET + i] != 0,
+            requires_move: data[O_REQUIRES_MOVE + i] != 0,
+            order_weapon: data[O_ORDER_WEAPON + i],
+        });
+    }
+
+    Ok(types)
+}
+
 /// Build fallback flingy data from original BW 1.16.1 values.
 /// Indexed by unit_type_id (0-227). Covers all common competitive units.
 fn build_fallback_flingy() -> Vec<FlingyType> {
@@ -526,5 +778,107 @@ mod tests {
         let wt = gd.weapon_type(0).unwrap();
         assert_eq!(wt.damage_amount, 6);
         assert!(gd.weapon_type(130).is_none()); // "None" weapon
+    }
+
+    fn build_techdata_dat() -> Vec<u8> {
+        let mut data = vec![0u8; TECHDATA_DAT_MIN_SIZE];
+        // Tech 0 (Stim): 100 minerals, 100 gas, 1200 frames
+        let cost: u16 = 100;
+        data[T_MINERAL_COST..T_MINERAL_COST + 2].copy_from_slice(&cost.to_le_bytes());
+        data[T_GAS_COST..T_GAS_COST + 2].copy_from_slice(&cost.to_le_bytes());
+        let time: u16 = 1200;
+        data[T_RESEARCH_TIME..T_RESEARCH_TIME + 2].copy_from_slice(&time.to_le_bytes());
+        let energy: u16 = 0;
+        data[T_ENERGY_COST..T_ENERGY_COST + 2].copy_from_slice(&energy.to_le_bytes());
+        data[T_RACE] = 1; // Terran
+        data
+    }
+
+    fn build_upgrades_dat() -> Vec<u8> {
+        let mut data = vec![0u8; UPGRADES_DAT_MIN_SIZE];
+        // Upgrade 0 (Infantry Armor): base 100 min, factor 75
+        let base: u16 = 100;
+        data[UG_MINERAL_BASE..UG_MINERAL_BASE + 2].copy_from_slice(&base.to_le_bytes());
+        let factor: u16 = 75;
+        data[UG_MINERAL_FACTOR..UG_MINERAL_FACTOR + 2].copy_from_slice(&factor.to_le_bytes());
+        data[UG_GAS_BASE..UG_GAS_BASE + 2].copy_from_slice(&base.to_le_bytes());
+        data[UG_GAS_FACTOR..UG_GAS_FACTOR + 2].copy_from_slice(&factor.to_le_bytes());
+        data[UG_MAX_REPEATS] = 3;
+        data[UG_RACE] = 1; // Terran
+        data
+    }
+
+    fn build_orders_dat() -> Vec<u8> {
+        vec![0u8; ORDERS_DAT_MIN_SIZE]
+    }
+
+    #[test]
+    fn test_parse_techdata_dat() {
+        let data = build_techdata_dat();
+        let types = parse_techdata_dat(&data).unwrap();
+        assert_eq!(types.len(), TECH_COUNT);
+        assert_eq!(types[0].mineral_cost, 100);
+        assert_eq!(types[0].gas_cost, 100);
+        assert_eq!(types[0].research_time, 1200);
+        assert_eq!(types[0].race, 1);
+    }
+
+    #[test]
+    fn test_parse_techdata_dat_too_short() {
+        assert!(parse_techdata_dat(&[0u8; 10]).is_err());
+    }
+
+    #[test]
+    fn test_parse_upgrades_dat() {
+        let data = build_upgrades_dat();
+        let types = parse_upgrades_dat(&data).unwrap();
+        assert_eq!(types.len(), UPGRADE_COUNT);
+        assert_eq!(types[0].mineral_base, 100);
+        assert_eq!(types[0].mineral_factor, 75);
+        assert_eq!(types[0].max_repeats, 3);
+    }
+
+    #[test]
+    fn test_upgrade_cost_at_level() {
+        let data = build_upgrades_dat();
+        let types = parse_upgrades_dat(&data).unwrap();
+        // Level 1: base only
+        assert_eq!(types[0].cost_at_level(1), (100, 100));
+        // Level 2: base + factor
+        assert_eq!(types[0].cost_at_level(2), (175, 175));
+        // Level 3: base + 2*factor
+        assert_eq!(types[0].cost_at_level(3), (250, 250));
+    }
+
+    #[test]
+    fn test_parse_upgrades_dat_too_short() {
+        assert!(parse_upgrades_dat(&[0u8; 10]).is_err());
+    }
+
+    #[test]
+    fn test_parse_orders_dat() {
+        let data = build_orders_dat();
+        let types = parse_orders_dat(&data).unwrap();
+        assert_eq!(types.len(), ORDER_COUNT);
+    }
+
+    #[test]
+    fn test_parse_orders_dat_too_short() {
+        assert!(parse_orders_dat(&[0u8; 10]).is_err());
+    }
+
+    #[test]
+    fn test_game_data_all() {
+        let flingy = build_flingy_dat();
+        let units = build_units_dat();
+        let weapons = build_weapons_dat();
+        let tech = build_techdata_dat();
+        let upgrades = build_upgrades_dat();
+        let orders = build_orders_dat();
+        let gd =
+            GameData::from_dat_all(&units, &flingy, &weapons, &tech, &upgrades, &orders).unwrap();
+        assert_eq!(gd.tech_type(0).unwrap().mineral_cost, 100);
+        assert_eq!(gd.upgrade_type(0).unwrap().mineral_base, 100);
+        assert!(gd.order_type(0).is_some());
     }
 }

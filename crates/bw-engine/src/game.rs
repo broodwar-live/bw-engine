@@ -761,6 +761,9 @@ mod tests {
             flingy_types,
             unit_types,
             weapon_types,
+            tech_types: Vec::new(),
+            upgrade_types: Vec::new(),
+            order_types: Vec::new(),
             fallback_flingy: Vec::new(),
         }
     }
