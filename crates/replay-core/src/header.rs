@@ -18,7 +18,7 @@ pub const PLAYER_NAMES_SIZE: usize = 0x300; // 768 bytes
 const EXTENDED_NAME_SIZE: usize = 96;
 
 /// Parsed replay header metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Header {
     pub engine: Engine,
     pub frame_count: u32,
@@ -46,14 +46,14 @@ impl Header {
 }
 
 /// Game engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Engine {
     StarCraft,
     BroodWar,
 }
 
 /// Game speed setting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Speed {
     Slowest,
     Slower,
@@ -66,7 +66,7 @@ pub enum Speed {
 }
 
 /// Game type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum GameType {
     None,
     Custom,
@@ -88,7 +88,7 @@ pub enum GameType {
 }
 
 /// A player's race.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Race {
     Zerg,
     Terran,
@@ -109,7 +109,7 @@ impl Race {
 }
 
 /// Player type (human, computer, etc.).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum PlayerType {
     Inactive,
     Computer,
@@ -129,7 +129,7 @@ impl PlayerType {
 }
 
 /// A player parsed from the replay header.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Player {
     pub slot_id: u16,
     pub player_id: u8,

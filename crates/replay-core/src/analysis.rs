@@ -5,7 +5,7 @@ use crate::gamedata;
 const FPS_FASTEST: f64 = 23.81;
 
 /// A build order entry: a production/tech action by a player at a game frame.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct BuildOrderEntry {
     pub frame: u32,
     pub real_seconds: f64,
@@ -14,7 +14,7 @@ pub struct BuildOrderEntry {
 }
 
 /// The type of build order action.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub enum BuildAction {
     /// Build a structure (unit_type).
     Build(u16),
@@ -62,7 +62,7 @@ impl std::fmt::Display for BuildAction {
 }
 
 /// Per-player APM (actions per minute) computed over the game duration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PlayerApm {
     pub player_id: u8,
     pub apm: f64,
@@ -70,7 +70,7 @@ pub struct PlayerApm {
 }
 
 /// APM sampled over time for graphing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ApmSample {
     pub frame: u32,
     pub real_seconds: f64,

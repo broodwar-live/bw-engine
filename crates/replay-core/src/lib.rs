@@ -15,7 +15,7 @@ use header::Header;
 use timeline::TimelineSnapshot;
 
 /// A fully parsed replay.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Replay {
     pub header: Header,
     pub commands: Vec<GameCommand>,

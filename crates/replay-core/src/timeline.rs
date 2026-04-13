@@ -4,7 +4,7 @@ use crate::analysis::{BuildAction, BuildOrderEntry};
 use crate::gamedata;
 
 /// A snapshot of a player's state at a specific point in the game.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PlayerState {
     pub player_id: u8,
     pub minerals_invested: u32,
@@ -86,7 +86,7 @@ impl PlayerState {
 }
 
 /// A snapshot of the full game state at a specific frame.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TimelineSnapshot {
     pub frame: u32,
     pub real_seconds: f64,

@@ -1,5 +1,5 @@
 /// A single command issued by a player at a specific game frame.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct GameCommand {
     pub frame: u32,
     pub player_id: u8,
@@ -10,7 +10,7 @@ pub struct GameCommand {
 ///
 /// Only gameplay-relevant commands are fully decoded. UI-only commands
 /// (lobby, voice, sync) are captured as `Other` with their type ID.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub enum Command {
     Select {
         unit_tags: Vec<u16>,
@@ -130,7 +130,7 @@ pub enum Command {
 }
 
 /// Hotkey assign vs recall.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum HotkeyAction {
     Assign,
     Select,

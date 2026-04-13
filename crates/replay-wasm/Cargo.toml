@@ -1,10 +1,17 @@
 [package]
 name = "replay-wasm"
 version = "0.1.0"
-description = "WASM bindings for the BW replay parser"
+description = "WASM bindings for the BW replay parser and map engine"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 replay-core = { path = "../replay-core" }
+bw-engine = { path = "../bw-engine" }
+wasm-bindgen.workspace = true
+serde.workspace = true
+serde-wasm-bindgen.workspace = true
