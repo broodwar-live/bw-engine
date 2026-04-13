@@ -5,8 +5,10 @@ pub mod format;
 pub mod gamedata;
 pub mod header;
 pub mod metadata;
+pub mod phases;
 pub mod section;
 pub mod similarity;
+pub mod skill;
 pub mod timeline;
 
 use analysis::{ApmSample, BuildOrderEntry, PlayerApm};
