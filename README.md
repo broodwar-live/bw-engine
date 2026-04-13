@@ -74,10 +74,15 @@ The [demo page](demo/index.html) accepts a `.rep` file plus optional game data f
 | **Map Rendering** | + VX4, VR4, WPE | Mini-tile pixel data, palette colors, tile graphic references |
 | **Unit Simulation** | + units.dat, flingy.dat | Movement physics, acceleration, turning, waypoint following |
 | **Pathfinding** | (included) | Tile-level A* with region fallback, diagonal corner prevention |
-| **Combat** | + weapons.dat | Weapon damage, cooldowns, range checks, unit death |
-| **Tech & Upgrades** | + techdata.dat, upgrades.dat | Research costs/times, upgrade level scaling |
-| **Production** | (included) | Build queues, train timers, unit spawning |
+| **Combat** | + weapons.dat | Ground + air weapons, damage types (concussive/explosive/normal vs unit sizes), Protoss shields |
+| **Tech & Upgrades** | + techdata.dat, upgrades.dat | Research costs/times, upgrade level scaling, upgrade bonuses applied to combat |
+| **Production** | (included) | Build queues, train timers, resource deduction, supply tracking |
+| **Build & Morph Timers** | (included) | Building construction time, unit/building morph timers |
 | **Fog of War** | (included) | Per-player visibility and exploration grids |
+| **Matchup Detection** | (included) | Auto-detect TvZ/PvT/etc., normalize map names, detect winner |
+| **Build Order Search** | (included) | Edit distance + LCS similarity metrics, rank by similarity |
+| **Game Phase Detection** | (included) | Opening/Early/Mid/Late phases from tech landmarks |
+| **Skill Estimation** | (included) | Composite skill score from EAPM, hotkeys, consistency, efficiency |
 | **MPQ Archives** | `.mpq` files | Read game data archives and `.scx`/`.scm` map files |
 | **String Tables** | `stat_txt.tbl` | Data-driven unit/tech/upgrade names (replaces hardcoded lookups) |
 | **Sprites** | `.grp` files | RLE-decoded frame pixel data for units and buildings |
@@ -96,10 +101,10 @@ Each crate has its own [`docs/architecture.md`](crates/replay-core/docs/architec
 
 | Crate | Description |
 |-------|-------------|
-| [`replay-core`](crates/replay-core/) | Parse `.rep` files into structured Rust types. 40+ command variants, build order extraction, APM analysis, timeline generation. |
-| [`bw-engine`](crates/bw-engine/) | Selective BW engine reimplementation. Map terrain, unit simulation with fp8 physics, tile-level A* pathfinding, combat, production, fog of war. Also includes parsers for BW native file formats: MPQ archives, SCX/SCM maps, TBL string tables, GRP sprites, and full .dat game data. 21 modules. |
-| [`replay-wasm`](crates/replay-wasm/) | WASM bindings via wasm-bindgen. `parseReplay()`, `GameMap`, `GameSim` with frame stepping and bulk data queries. |
-| [`replay-nif`](crates/replay-nif/) | Elixir NIF bindings via Rustler (stub). |
+| [`replay-core`](crates/replay-core/) | Parse `.rep` files into structured Rust types. 40+ command variants, build order extraction, APM analysis, timeline, matchup detection, build order similarity, game phase detection, and skill estimation. |
+| [`bw-engine`](crates/bw-engine/) | Selective BW engine reimplementation. Map terrain, unit simulation with fp8 physics, tile-level A* pathfinding, air + ground combat with damage types and shields, production with resource tracking, fog of war. Also includes parsers for BW native file formats: MPQ archives, SCX/SCM maps, TBL string tables, GRP sprites, and full .dat game data. 21 modules. |
+| [`replay-wasm`](crates/replay-wasm/) | WASM bindings via wasm-bindgen. `parseReplay()`, `GameMap`, `GameSim`, plus `MpqFile`, `ScxMapFile`, `TblFile`, `GrpFile`, `TilesetPalette`, `TilesetVx4`, `TilesetVr4`. |
+| [`replay-nif`](crates/replay-nif/) | Elixir NIF bindings via Rustler. 5 NIF functions: `parse_replay`, `parse_header`, `extract_build_order`, `calculate_apm`, `apm_over_time`. |
 
 ## Engine Architecture
 
@@ -121,17 +126,18 @@ The simulation engine reimplements BW subsystems from the [OpenBW](https://githu
                     ┌─────────────┼──────────────┐
                     │             │              │
                 Movement    Combat/Death    Production
-              (fp8 physics,  (weapons,     (build queue,
-               pathfinding,   damage,       train timer,
-               waypoints)     cooldowns)    unit spawn)
+              (fp8 physics,  (air+ground,   (build queue,
+               pathfinding,   dmg types,     resource cost,
+               waypoints)     shields)       supply check)
                     │             │              │
                     └─────────────┼──────────────┘
                                   │
                     ┌─────────────┼──────────────┐
                     │             │              │
               Unit Positions   Fog of War   Player State
-              (x, y, type,    (visible,     (minerals,
-               owner, HP)      explored)     gas, supply)
+              (x, y, type,    (visible,     (minerals, gas,
+               owner, HP,      explored)     supply, upgrades,
+               shields)                       techs)
 
 File format support:
   .mpq ──> MpqArchive ──> extract any file by path
@@ -164,8 +170,8 @@ Game data files are in your StarCraft installation's `arr/` and `tileset/` direc
 ## Tests
 
 ```sh
-cargo test --workspace    # 196 tests
-cargo test -p bw-engine   # 144 unit + 6 integration (real replay fixtures)
+cargo test --workspace    # 242 tests
+cargo test -p bw-engine   # 146 unit + 6 integration (real replay fixtures)
 ```
 
 Integration tests run the full simulation pipeline against 5 real replay fixtures (modern + legacy formats, up to 53K frames) and validate crash-free execution with 89-95% command translation coverage.

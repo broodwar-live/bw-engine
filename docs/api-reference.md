@@ -105,8 +105,107 @@ replay.build_order               // Vec<BuildOrderEntry>
 replay.player_apm                // Vec<PlayerApm>
 replay.apm_over_time(60.0, 10.0) // Vec<ApmSample>
 
+// Game metadata (auto-detected)
+replay.metadata.matchup          // Option<Matchup> — e.g., { code: "TvZ", mirror: false }
+replay.metadata.map_name         // String — normalized ("Fighting Spirit")
+replay.metadata.result           // GameResult::Winner { player_id, player_name } or Unknown
+replay.metadata.is_1v1           // bool
+replay.metadata.duration_secs    // f64
+
 // Map data
 replay.map_data                  // Vec<u8> — raw CHK bytes
+```
+
+### Matchup Detection & Metadata
+
+```rust
+use replay_core::metadata::{extract_metadata, normalize_map_name, GameResult};
+
+let meta = extract_metadata(&replay.header, &replay.commands);
+meta.matchup.unwrap().code       // "TvZ", "PvT", "ZvP", "TvT", etc.
+meta.map_name                    // "(4)Fighting Spirit 1.3" → "Fighting Spirit"
+meta.result                      // GameResult::Winner { player_id: 0, .. }
+
+normalize_map_name("(4)Circuit Breaker v2.1")  // "Circuit Breaker"
+```
+
+### Build Order Similarity
+
+```rust
+use replay_core::similarity::{BuildSequence, similarity, lcs_similarity, rank_by_similarity};
+
+// Extract per-player build sequences
+let p0 = BuildSequence::from_build_order(&replay.build_order, 0);
+let p1 = BuildSequence::from_build_order(&replay.build_order, 1);
+
+// Compare openings (first 20 actions)
+let opening = BuildSequence::from_build_order_opening(&replay.build_order, 0, 20);
+
+// Similarity metrics [0.0, 1.0]
+similarity(&p0, &other_build)       // edit-distance-based
+lcs_similarity(&p0, &other_build)   // longest common subsequence
+
+// Rank candidates by similarity
+let ranked = rank_by_similarity(&opening, &candidate_builds);
+// ranked: Vec<(index, score)> sorted by descending similarity
+```
+
+### Game Phase Detection
+
+```rust
+use replay_core::phases::{detect_phases, phase_at_frame, Phase};
+
+let analysis = detect_phases(&replay.build_order, replay.header.frame_count);
+
+for phase in &analysis.phases {
+    println!("{}: {:.0}s", phase.phase.name(), phase.start_seconds);
+}
+// "Opening: 0s", "Early Game: 34s", "Mid Game: 126s", "Late Game: 336s"
+
+// Query phase at any frame
+phase_at_frame(&analysis, 3000)  // Phase::MidGame
+
+// Tech landmarks
+analysis.landmarks.first_gas     // Option<u32> — frame of first gas building
+analysis.landmarks.first_tier2   // Option<u32> — frame of first tier-2 tech
+```
+
+### Player Skill Estimation
+
+```rust
+use replay_core::skill::{estimate_skill, SkillTier};
+
+let apm_samples = replay.apm_over_time(60.0, 10.0);
+let profiles = estimate_skill(
+    &replay.commands, &replay.player_apm, &apm_samples, replay.header.frame_count,
+);
+
+for p in &profiles {
+    println!("{}: score={:.0} tier={} eapm={:.0} efficiency={:.0}%",
+        p.player_id, p.skill_score, p.tier.name(), p.eapm, p.efficiency * 100.0);
+}
+// "0: score=62 tier=Expert eapm=285 efficiency=82%"
+```
+
+### Elixir NIF Bindings
+
+```elixir
+defmodule BroodwarNif.ReplayParser do
+  use Rustler, otp_app: :broodwar, crate: "replay_nif"
+
+  def parse_replay(_data), do: :erlang.nif_error(:not_loaded)
+  def parse_header(_data), do: :erlang.nif_error(:not_loaded)
+  def extract_build_order(_data), do: :erlang.nif_error(:not_loaded)
+  def calculate_apm(_data), do: :erlang.nif_error(:not_loaded)
+  def apm_over_time(_data, _window_secs, _step_secs), do: :erlang.nif_error(:not_loaded)
+end
+
+# Usage
+{:ok, replay} = BroodwarNif.ReplayParser.parse_replay(File.read!("game.rep"))
+replay.header.map_name          # "Fighting Spirit"
+replay.header.players           # [%{name: "Flash", race: :terran, ...}, ...]
+replay.build_order              # [%{frame: 500, name: "Barracks", action: {:build, 111}}, ...]
+replay.player_apm               # [%{player_id: 0, apm: 312.5, eapm: 280.1}, ...]
 ```
 
 ### bw-engine

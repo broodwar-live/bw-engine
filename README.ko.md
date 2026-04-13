@@ -74,10 +74,15 @@ python3 -m http.server 8000
 | **맵 렌더링** | + VX4, VR4, WPE | 미니타일 픽셀 데이터, 팔레트 색상, 타일 그래픽 참조 |
 | **유닛 시뮬레이션** | + units.dat, flingy.dat | 이동 물리, 가속, 회전, 웨이포인트 추적 |
 | **경로 탐색** | (포함됨) | 타일 수준 A*와 리전 폴백, 대각선 코너 방지 |
-| **전투** | + weapons.dat | 무기 데미지, 쿨다운, 사거리 체크, 유닛 사망 |
-| **기술 & 업그레이드** | + techdata.dat, upgrades.dat | 연구 비용/시간, 업그레이드 레벨 스케일링 |
-| **생산** | (포함됨) | 빌드 큐, 훈련 타이머, 유닛 생성 |
+| **전투** | + weapons.dat | 지상+공중 무기, 데미지 타입 (진동/폭발/일반 vs 유닛 크기), 프로토스 실드 |
+| **기술 & 업그레이드** | + techdata.dat, upgrades.dat | 연구 비용/시간, 업그레이드 레벨 스케일링, 전투 보너스 적용 |
+| **생산** | (포함됨) | 빌드 큐, 훈련 타이머, 자원 차감, 서플라이 추적 |
+| **건설 & 변태 타이머** | (포함됨) | 건물 건설 시간, 유닛/건물 변태 타이머 |
 | **전장의 안개** | (포함됨) | 플레이어별 시야 및 탐사 그리드 |
+| **매치업 감지** | (포함됨) | TvZ/PvT 등 자동 감지, 맵 이름 정규화, 승자 감지 |
+| **빌드 오더 검색** | (포함됨) | 편집 거리 + LCS 유사도 메트릭, 유사도 순위 |
+| **게임 페이즈 감지** | (포함됨) | 오프닝/초반/중반/후반 기술 랜드마크 기반 감지 |
+| **스킬 추정** | (포함됨) | EAPM, 핫키, 일관성, 효율성 기반 종합 스킬 점수 |
 | **MPQ 아카이브** | `.mpq` 파일 | 게임 데이터 아카이브 및 `.scx`/`.scm` 맵 파일 읽기 |
 | **문자열 테이블** | `stat_txt.tbl` | 데이터 기반 유닛/기술/업그레이드 이름 |
 | **스프라이트** | `.grp` 파일 | 유닛 및 건물의 RLE 디코딩 프레임 픽셀 데이터 |
@@ -96,10 +101,10 @@ python3 -m http.server 8000
 
 | 크레이트 | 설명 |
 |----------|------|
-| [`replay-core`](crates/replay-core/) | `.rep` 파일을 구조화된 Rust 타입으로 파싱. 40개 이상의 커맨드 변형, 빌드 오더 추출, APM 분석, 타임라인 생성. |
-| [`bw-engine`](crates/bw-engine/) | 선택적 BW 엔진 재구현. 맵 지형, fp8 물리 기반 유닛 시뮬레이션, 타일 수준 A* 경로 탐색, 전투, 생산, 전장의 안개. MPQ 아카이브, SCX/SCM 맵, TBL 문자열 테이블, GRP 스프라이트, 전체 .dat 게임 데이터 파서 포함. 21개 모듈. |
-| [`replay-wasm`](crates/replay-wasm/) | wasm-bindgen을 통한 WASM 바인딩. `parseReplay()`, `GameMap`, `GameSim`에 프레임 스텝핑 및 벌크 데이터 쿼리 지원. |
-| [`replay-nif`](crates/replay-nif/) | Rustler를 통한 Elixir NIF 바인딩 (스텁). |
+| [`replay-core`](crates/replay-core/) | `.rep` 파일을 구조화된 Rust 타입으로 파싱. 40개 이상의 커맨드 변형, 빌드 오더 추출, APM 분석, 타임라인, 매치업 감지, 빌드 오더 유사도, 게임 페이즈 감지, 스킬 추정. |
+| [`bw-engine`](crates/bw-engine/) | 선택적 BW 엔진 재구현. 맵 지형, fp8 물리 기반 유닛 시뮬레이션, 타일 수준 A* 경로 탐색, 데미지 타입과 실드 포함 지상+공중 전투, 자원 추적 생산, 전장의 안개. MPQ 아카이브, SCX/SCM 맵, TBL 문자열 테이블, GRP 스프라이트, 전체 .dat 게임 데이터 파서 포함. 21개 모듈. |
+| [`replay-wasm`](crates/replay-wasm/) | wasm-bindgen을 통한 WASM 바인딩. `parseReplay()`, `GameMap`, `GameSim`, `MpqFile`, `ScxMapFile`, `TblFile`, `GrpFile`, `TilesetPalette`, `TilesetVx4`, `TilesetVr4`. |
+| [`replay-nif`](crates/replay-nif/) | Rustler를 통한 Elixir NIF 바인딩. `parse_replay`, `parse_header`, `extract_build_order`, `calculate_apm`, `apm_over_time` 5개 NIF 함수. |
 
 ## 엔진 아키텍처
 
@@ -121,17 +126,18 @@ python3 -m http.server 8000
                     ┌─────────────┼──────────────┐
                     │             │              │
                 이동          전투/사망        생산
-              (fp8 물리,     (무기,         (빌드 큐,
-               경로 탐색,     데미지,        훈련 타이머,
-               웨이포인트)     쿨다운)        유닛 생성)
+              (fp8 물리,     (지상+공중,     (빌드 큐,
+               경로 탐색,     데미지 타입,    자원 비용,
+               웨이포인트)     실드)          서플라이 체크)
                     │             │              │
                     └─────────────┼──────────────┘
                                   │
                     ┌─────────────┼──────────────┐
                     │             │              │
               유닛 위치       전장의 안개     플레이어 상태
-              (x, y, 타입,   (시야,         (미네랄,
-               소유자, HP)     탐사)          가스, 서플라이)
+              (x, y, 타입,   (시야,         (미네랄, 가스,
+               소유자, HP,     탐사)          서플라이, 업그레이드,
+               실드)                          기술)
 
 파일 포맷 지원:
   .mpq ──> MpqArchive ──> 경로로 파일 추출
@@ -164,8 +170,8 @@ python3 -m http.server 8000
 ## 테스트
 
 ```sh
-cargo test --workspace    # 196개 테스트
-cargo test -p bw-engine   # 144개 유닛 + 6개 통합 테스트 (실제 리플레이 픽스처)
+cargo test --workspace    # 242개 테스트
+cargo test -p bw-engine   # 146개 유닛 + 6개 통합 테스트 (실제 리플레이 픽스처)
 ```
 
 통합 테스트는 5개의 실제 리플레이 픽스처(모던 + 레거시 포맷, 최대 53K 프레임)에 대해 전체 시뮬레이션 파이프라인을 실행하고 89-95% 커맨드 변환 커버리지로 크래시 없는 실행을 검증합니다.

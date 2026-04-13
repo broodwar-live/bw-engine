@@ -69,6 +69,10 @@ The `.dat` files are in your StarCraft installation's `arr/` directory. Tileset 
 - APM and EAPM per player
 - APM over time for graphing
 - Timeline of cumulative resource investment
+- **Matchup detection** — auto-detect TvZ/PvT/etc., normalize map names, detect winner
+- **Build order similarity** — compare builds with edit distance and LCS metrics
+- **Game phase detection** — Opening/Early/Mid/Late game from tech landmarks
+- **Skill estimation** — composite score from EAPM, hotkeys, consistency, efficiency
 
 ### With game data files (units.dat, flingy.dat):
 - Unit simulation with movement physics
@@ -76,7 +80,11 @@ The `.dat` files are in your StarCraft installation's `arr/` directory. Tileset 
 - Initial unit placement from map data
 
 ### With weapons.dat additionally:
-- Combat simulation (damage, weapon cooldowns, unit death)
+- Air + ground combat with correct weapon selection
+- Damage type modifiers (concussive/explosive/normal vs unit sizes)
+- Protoss shields (absorb damage first)
+- Upgrade bonuses applied to weapon damage and armor
+- Resource deduction and supply tracking for training/building
 
 ### With techdata.dat and upgrades.dat:
 - Data-driven tech research costs and times
