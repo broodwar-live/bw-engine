@@ -73,6 +73,9 @@ The `.dat` files are in your StarCraft installation's `arr/` directory. Tileset 
 - **Build order similarity** — compare builds with edit distance and LCS metrics
 - **Game phase detection** — Opening/Early/Mid/Late game from tech landmarks
 - **Skill estimation** — composite score from EAPM, hotkeys, consistency, efficiency
+- **Build order classification** — auto-label openings ("9 Pool", "1-1-1", "Forge FE")
+- **Player identity** — normalize names, strip clan tags, resolve across replays
+- **Collection stats** — aggregate matchup winrates, map popularity across replay sets
 
 ### With game data files (units.dat, flingy.dat):
 - Unit simulation with movement physics

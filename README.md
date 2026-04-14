@@ -83,6 +83,9 @@ The [demo page](demo/index.html) accepts a `.rep` file plus optional game data f
 | **Build Order Search** | (included) | Edit distance + LCS similarity metrics, rank by similarity |
 | **Game Phase Detection** | (included) | Opening/Early/Mid/Late phases from tech landmarks |
 | **Skill Estimation** | (included) | Composite skill score from EAPM, hotkeys, consistency, efficiency |
+| **Build Order Classification** | (included) | Auto-label openings ("9 Pool", "1-1-1", "Forge FE") with confidence scores |
+| **Player Identity** | (included) | Normalize names, strip clan tags, resolve across replays |
+| **Collection Stats** | (included) | Matchup winrates, map popularity, race distribution across replay sets |
 | **MPQ Archives** | `.mpq` files | Read game data archives and `.scx`/`.scm` map files |
 | **String Tables** | `stat_txt.tbl` | Data-driven unit/tech/upgrade names (replaces hardcoded lookups) |
 | **Sprites** | `.grp` files | RLE-decoded frame pixel data for units and buildings |
@@ -101,10 +104,10 @@ Each crate has its own [`docs/architecture.md`](crates/replay-core/docs/architec
 
 | Crate | Description |
 |-------|-------------|
-| [`replay-core`](crates/replay-core/) | Parse `.rep` files into structured Rust types. 40+ command variants, build order extraction, APM analysis, timeline, matchup detection, build order similarity, game phase detection, and skill estimation. |
+| [`replay-core`](crates/replay-core/) | Parse `.rep` files into structured Rust types. 40+ command variants, build order extraction, APM analysis, timeline, matchup detection, build order similarity/classification, game phases, skill estimation, player identity, and collection stats. 16 modules. |
 | [`bw-engine`](crates/bw-engine/) | Selective BW engine reimplementation. Map terrain, unit simulation with fp8 physics, tile-level A* pathfinding, air + ground combat with damage types and shields, production with resource tracking, fog of war. Also includes parsers for BW native file formats: MPQ archives, SCX/SCM maps, TBL string tables, GRP sprites, and full .dat game data. 21 modules. |
 | [`replay-wasm`](crates/replay-wasm/) | WASM bindings via wasm-bindgen. `parseReplay()`, `GameMap`, `GameSim`, plus `MpqFile`, `ScxMapFile`, `TblFile`, `GrpFile`, `TilesetPalette`, `TilesetVx4`, `TilesetVr4`. |
-| [`replay-nif`](crates/replay-nif/) | Elixir NIF bindings via Rustler. 5 NIF functions: `parse_replay`, `parse_header`, `extract_build_order`, `calculate_apm`, `apm_over_time`. |
+| [`replay-nif`](crates/replay-nif/) | Elixir NIF bindings via Rustler. 10 NIF functions for parsing, analysis, phases, skill, classification, similarity, and identity. |
 
 ## Engine Architecture
 
@@ -170,8 +173,9 @@ Game data files are in your StarCraft installation's `arr/` and `tileset/` direc
 ## Tests
 
 ```sh
-cargo test --workspace    # 242 tests
+cargo test --workspace    # 269 tests
 cargo test -p bw-engine   # 146 unit + 6 integration (real replay fixtures)
+cargo bench               # criterion benchmarks for parsing + simulation
 ```
 
 Integration tests run the full simulation pipeline against 5 real replay fixtures (modern + legacy formats, up to 53K frames) and validate crash-free execution with 89-95% command translation coverage.

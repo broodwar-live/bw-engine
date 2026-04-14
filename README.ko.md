@@ -83,6 +83,9 @@ python3 -m http.server 8000
 | **빌드 오더 검색** | (포함됨) | 편집 거리 + LCS 유사도 메트릭, 유사도 순위 |
 | **게임 페이즈 감지** | (포함됨) | 오프닝/초반/중반/후반 기술 랜드마크 기반 감지 |
 | **스킬 추정** | (포함됨) | EAPM, 핫키, 일관성, 효율성 기반 종합 스킬 점수 |
+| **빌드 오더 분류** | (포함됨) | 오프닝 자동 분류 ("9 Pool", "1-1-1", "Forge FE") 신뢰도 점수 |
+| **플레이어 식별** | (포함됨) | 이름 정규화, 클랜 태그 제거, 리플레이 간 식별 |
+| **컬렉션 통계** | (포함됨) | 매치업 승률, 맵 인기도, 종족 분포 집계 |
 | **MPQ 아카이브** | `.mpq` 파일 | 게임 데이터 아카이브 및 `.scx`/`.scm` 맵 파일 읽기 |
 | **문자열 테이블** | `stat_txt.tbl` | 데이터 기반 유닛/기술/업그레이드 이름 |
 | **스프라이트** | `.grp` 파일 | 유닛 및 건물의 RLE 디코딩 프레임 픽셀 데이터 |
@@ -101,10 +104,10 @@ python3 -m http.server 8000
 
 | 크레이트 | 설명 |
 |----------|------|
-| [`replay-core`](crates/replay-core/) | `.rep` 파일을 구조화된 Rust 타입으로 파싱. 40개 이상의 커맨드 변형, 빌드 오더 추출, APM 분석, 타임라인, 매치업 감지, 빌드 오더 유사도, 게임 페이즈 감지, 스킬 추정. |
+| [`replay-core`](crates/replay-core/) | `.rep` 파일을 구조화된 Rust 타입으로 파싱. 40개 이상의 커맨드 변형, 빌드 오더 추출/분류, APM 분석, 타임라인, 매치업 감지, 빌드 오더 유사도, 게임 페이즈 감지, 스킬 추정, 플레이어 식별, 컬렉션 통계. 16개 모듈. |
 | [`bw-engine`](crates/bw-engine/) | 선택적 BW 엔진 재구현. 맵 지형, fp8 물리 기반 유닛 시뮬레이션, 타일 수준 A* 경로 탐색, 데미지 타입과 실드 포함 지상+공중 전투, 자원 추적 생산, 전장의 안개. MPQ 아카이브, SCX/SCM 맵, TBL 문자열 테이블, GRP 스프라이트, 전체 .dat 게임 데이터 파서 포함. 21개 모듈. |
 | [`replay-wasm`](crates/replay-wasm/) | wasm-bindgen을 통한 WASM 바인딩. `parseReplay()`, `GameMap`, `GameSim`, `MpqFile`, `ScxMapFile`, `TblFile`, `GrpFile`, `TilesetPalette`, `TilesetVx4`, `TilesetVr4`. |
-| [`replay-nif`](crates/replay-nif/) | Rustler를 통한 Elixir NIF 바인딩. `parse_replay`, `parse_header`, `extract_build_order`, `calculate_apm`, `apm_over_time` 5개 NIF 함수. |
+| [`replay-nif`](crates/replay-nif/) | Rustler를 통한 Elixir NIF 바인딩. 파싱, 분석, 페이즈, 스킬, 분류, 유사도, 식별 등 10개 NIF 함수. |
 
 ## 엔진 아키텍처
 
@@ -170,8 +173,9 @@ python3 -m http.server 8000
 ## 테스트
 
 ```sh
-cargo test --workspace    # 242개 테스트
+cargo test --workspace    # 269개 테스트
 cargo test -p bw-engine   # 146개 유닛 + 6개 통합 테스트 (실제 리플레이 픽스처)
+cargo bench               # 파싱 + 시뮬레이션 criterion 벤치마크
 ```
 
 통합 테스트는 5개의 실제 리플레이 픽스처(모던 + 레거시 포맷, 최대 53K 프레임)에 대해 전체 시뮬레이션 파이프라인을 실행하고 89-95% 커맨드 변환 커버리지로 크래시 없는 실행을 검증합니다.

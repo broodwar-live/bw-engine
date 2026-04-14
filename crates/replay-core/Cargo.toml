@@ -12,3 +12,10 @@ flate2.workspace = true
 encoding_rs.workspace = true
 explode.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "parsing"
+harness = false

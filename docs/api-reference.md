@@ -187,7 +187,64 @@ for p in &profiles {
 // "0: score=62 tier=Expert eapm=285 efficiency=82%"
 ```
 
-### Elixir NIF Bindings
+### Build Order Classification
+
+```rust
+use replay_core::classify::{classify_opening, classify_all};
+use replay_core::header::Race;
+
+let classification = classify_opening(&replay.build_order, 0, &Race::Terran);
+classification.name       // "1-1-1"
+classification.tag        // "111" — for database indexing
+classification.confidence // 0.85
+
+// Classify all players at once
+let players = vec![(0, Race::Terran), (1, Race::Zerg)];
+let all = classify_all(&replay.build_order, &players);
+```
+
+### Player Identity Resolution
+
+```rust
+use replay_core::identity::{normalize_name, IdentityResolver};
+
+// Normalize a single name
+let n = normalize_name("[KT]Flash");
+n.normalized  // "flash"
+n.clan_tag    // Some("KT")
+
+// Resolve identities across replays
+let mut resolver = IdentityResolver::new();
+resolver.add("[KT]Flash", "T");
+resolver.add("Flash", "T");
+resolver.add("Jaedong", "Z");
+
+let identities = resolver.resolve();
+// flash: 2 games, aliases=["Flash", "[KT]Flash"], clan_tags=["KT"]
+// jaedong: 1 game
+```
+
+### Collection Stats
+
+```rust
+use replay_core::stats::StatsCollector;
+
+let mut collector = StatsCollector::new();
+for replay in &replays {
+    collector.add(replay);
+}
+let report = collector.report();
+
+report.total_replays                    // 150
+report.matchup_winrates[0].matchup      // "TvZ"
+report.matchup_winrates[0].first_race_winrate  // 0.52 (Terran's winrate)
+report.map_popularity[0].map_name       // "Fighting Spirit"
+report.map_popularity[0].percentage     // 23.4
+report.race_popularity                  // [{ race: "T", percentage: 35.2 }, ...]
+report.matchup_durations[0].avg_duration_secs  // 612.5
+```
+
+### Elixir NIF Bindings (10 functions)
 
 ```elixir
 defmodule BroodwarNif.ReplayParser do
@@ -198,6 +255,11 @@ defmodule BroodwarNif.ReplayParser do
   def extract_build_order(_data), do: :erlang.nif_error(:not_loaded)
   def calculate_apm(_data), do: :erlang.nif_error(:not_loaded)
   def apm_over_time(_data, _window_secs, _step_secs), do: :erlang.nif_error(:not_loaded)
+  def detect_phases(_data), do: :erlang.nif_error(:not_loaded)
+  def estimate_skill(_data), do: :erlang.nif_error(:not_loaded)
+  def compare_build_orders(_data_a, _data_b, _player_index), do: :erlang.nif_error(:not_loaded)
+  def classify_opening(_data), do: :erlang.nif_error(:not_loaded)
+  def normalize_player_name(_name), do: :erlang.nif_error(:not_loaded)
 end
 
 # Usage
