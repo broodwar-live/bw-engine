@@ -34,7 +34,8 @@ pub struct UnitType {
     pub build_time: u16, // frames
     pub mineral_cost: u16,
     pub gas_cost: u16,
-    pub supply_cost: u8, // in half-units (Marine = 2, Zergling = 1)
+    pub supply_cost: u8,     // in half-units (Marine = 2, Zergling = 1)
+    pub supply_provided: u8, // in half-units (Supply Depot = 16, Pylon = 16)
     pub is_building: bool,
 }
 
@@ -83,7 +84,8 @@ pub struct WeaponType {
     pub cooldown: u8,
     pub damage_factor: u8,
     pub damage_type: DamageType,
-    pub max_range: u32, // in pixels (not fp8)
+    pub damage_upgrade: u8, // upgrade ID that increases this weapon's damage
+    pub max_range: u32,     // in pixels (not fp8)
 }
 
 /// Weapon damage type for size-based modifiers.
@@ -363,9 +365,11 @@ const U_PORTRAIT: usize = U_DIMENSIONS + U * 8; // 228 x u16
 const U_MINERAL_COST: usize = U_PORTRAIT + U * 2; // 228 x u16
 const U_GAS_COST: usize = U_MINERAL_COST + U * 2; // 228 x u16
 const U_BUILD_TIME: usize = U_GAS_COST + U * 2; // 228 x u16
+const U_SUPPLY_REQUIRED: usize = U_BUILD_TIME + U * 2; // 228 x u8 (in half-units)
+const U_SUPPLY_PROVIDED: usize = U_SUPPLY_REQUIRED + U; // 228 x u8 (in half-units)
 
-/// Minimum units.dat size to read all fields we need (through build_time).
-const UNITS_DAT_MIN_SIZE: usize = U_BUILD_TIME + U * 2;
+/// Minimum units.dat size to read all fields we need (through supply).
+const UNITS_DAT_MIN_SIZE: usize = U_SUPPLY_PROVIDED + U;
 
 /// Building flag in units.dat flags field.
 const FLAG_BUILDING: u32 = 0x0000_0001;
@@ -405,7 +409,8 @@ fn parse_units_dat(data: &[u8]) -> Result<Vec<UnitType>> {
                 build_time: read_u16_le(data, U_BUILD_TIME + i * 2),
                 mineral_cost: read_u16_le(data, U_MINERAL_COST + i * 2),
                 gas_cost: read_u16_le(data, U_GAS_COST + i * 2),
-                supply_cost: 0, // supply is in a separate section not in units.dat
+                supply_cost: data.get(U_SUPPLY_REQUIRED + i).copied().unwrap_or(0),
+                supply_provided: data.get(U_SUPPLY_PROVIDED + i).copied().unwrap_or(0),
                 is_building: read_u32_le(data, U_FLAGS + i * 4) & FLAG_BUILDING != 0,
             });
         } else {
@@ -428,6 +433,7 @@ fn parse_units_dat(data: &[u8]) -> Result<Vec<UnitType>> {
                 mineral_cost: 0,
                 gas_cost: 0,
                 supply_cost: 0,
+                supply_provided: 0,
                 is_building: false,
             });
         }
@@ -480,6 +486,7 @@ fn parse_weapons_dat(data: &[u8]) -> Result<Vec<WeaponType>> {
             cooldown: data[W_COOLDOWN + i],
             damage_factor: data[W_BULLET_COUNT + i], // bullet_count acts as damage_factor
             damage_type: DamageType::from_u8(data[W_DAMAGE_TYPE + i]),
+            damage_upgrade: data[W_DAMAGE_UPGRADE + i],
             max_range: read_u32_le(data, W_MAX_RANGE + i * 4),
         });
     }

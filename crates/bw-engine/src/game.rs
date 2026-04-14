@@ -704,17 +704,13 @@ impl Game {
         }
     }
 
-    /// Track supply provided by a unit type (in half-units, matching BW convention).
+    /// Track supply provided by a unit type, using units.dat data.
     fn add_supply(&mut self, player_id: u8, unit_type: u16) {
-        let provided = match unit_type {
-            106 => 20,      // Command Center: 10 supply = 20 half-units
-            109 => 16,      // Supply Depot: 8 supply = 16 half-units
-            131..=133 => 2, // Hatchery/Lair/Hive: 1 supply = 2 half-units
-            42 => 16,       // Overlord: 8 supply = 16 half-units
-            154 => 18,      // Nexus: 9 supply = 18 half-units
-            156 => 16,      // Pylon: 8 supply = 16 half-units
-            _ => 0,
-        };
+        let provided = self
+            .data
+            .unit_type(unit_type)
+            .map(|ut| ut.supply_provided as i32)
+            .unwrap_or(0);
         if provided > 0 && (player_id as usize) < MAX_PLAYERS {
             self.player_states[player_id as usize].supply_max += provided;
         }
@@ -832,7 +828,8 @@ impl Game {
                 // Base damage = amount * factor + upgrade bonus.
                 let attacker_owner = attacker.owner;
                 let upgrade_bonus = weapon.damage_bonus as i32
-                    * self.player_states[attacker_owner as usize].upgrade_level(weapon_id) as i32;
+                    * self.player_states[attacker_owner as usize]
+                        .upgrade_level(weapon.damage_upgrade) as i32;
                 let base_damage = weapon.damage_amount as i32 * weapon.damage_factor.max(1) as i32
                     + upgrade_bonus;
 
@@ -1205,7 +1202,8 @@ mod tests {
             build_time: 30,
             mineral_cost: 50,
             gas_cost: 0,
-            supply_cost: 0,
+            supply_cost: 2,
+            supply_provided: 0,
             is_building: false,
         };
         let barracks_ut = UnitType {
@@ -1227,6 +1225,7 @@ mod tests {
             mineral_cost: 150,
             gas_cost: 0,
             supply_cost: 0,
+            supply_provided: 0,
             is_building: true,
         };
         let mut unit_types = vec![UnitType::default(); 228];
@@ -1239,7 +1238,8 @@ mod tests {
             cooldown: 15,
             damage_factor: 1,
             damage_type: crate::dat::DamageType::Normal,
-            max_range: 128, // 4 tiles
+            damage_upgrade: 7, // Infantry Weapons
+            max_range: 128,    // 4 tiles
         };
         let mut weapon_types = vec![WeaponType::default(); 130];
         weapon_types[0] = marine_weapon;

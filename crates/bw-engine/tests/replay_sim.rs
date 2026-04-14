@@ -48,7 +48,8 @@ fn synthetic_game_data() -> GameData {
         build_time: 100,
         mineral_cost: 50,
         gas_cost: 0,
-        supply_cost: 0,
+        supply_cost: 2,
+        supply_provided: 0,
         is_building: false,
     };
     let building_unit = UnitType {
@@ -71,6 +72,7 @@ fn synthetic_game_data() -> GameData {
         cooldown: 15,
         damage_factor: 1,
         damage_type: bw_engine::DamageType::Normal,
+        damage_upgrade: 7,
         max_range: 128,
     };
     let weapon_types = vec![default_weapon; 130];

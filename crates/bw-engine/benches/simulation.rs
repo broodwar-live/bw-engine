@@ -37,6 +37,7 @@ fn test_game_data() -> GameData {
         cooldown: 15,
         damage_factor: 1,
         damage_type: bw_engine::DamageType::Normal,
+        damage_upgrade: 7,
         max_range: 128,
     };
     let weapon_types = vec![marine_weapon; 130];

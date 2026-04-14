@@ -76,8 +76,11 @@ The [demo page](demo/index.html) accepts a `.rep` file plus optional game data f
 | **Pathfinding** | (included) | Tile-level A* with region fallback, diagonal corner prevention |
 | **Combat** | + weapons.dat | Ground + air weapons, damage types (concussive/explosive/normal vs unit sizes), Protoss shields |
 | **Tech & Upgrades** | + techdata.dat, upgrades.dat | Research costs/times, upgrade level scaling, upgrade bonuses applied to combat |
-| **Production** | (included) | Build queues, train timers, resource deduction, supply tracking |
+| **Production** | (included) | Build queues, train timers, resource deduction, data-driven supply costs |
 | **Build & Morph Timers** | (included) | Building construction time, unit/building morph timers |
+| **Worker Mining** | (included) | Workers generate mineral/gas income per trip cycle |
+| **Energy** | (included) | Caster energy tracking with regeneration (HT, Defiler, Vessel, etc.) |
+| **Unit Collision** | (included) | Ground units push apart on overlap, buildings block movement |
 | **Fog of War** | (included) | Per-player visibility and exploration grids |
 | **Matchup Detection** | (included) | Auto-detect TvZ/PvT/etc., normalize map names, detect winner |
 | **Build Order Search** | (included) | Edit distance + LCS similarity metrics, rank by similarity |
@@ -173,8 +176,9 @@ Game data files are in your StarCraft installation's `arr/` and `tileset/` direc
 ## Tests
 
 ```sh
-cargo test --workspace    # 269 tests
+cargo test --workspace    # 282 tests
 cargo test -p bw-engine   # 146 unit + 6 integration (real replay fixtures)
+cargo test -p replay-core # 111 unit + 12 integration + 7 proptest
 cargo bench               # criterion benchmarks for parsing + simulation
 ```
 
