@@ -109,6 +109,14 @@ pub struct UnitState {
 
     // Collision
     pub collision_radius: u8, // in pixels (half-width of unit)
+
+    // Rally point (buildings only)
+    pub rally_x: i32,
+    pub rally_y: i32,
+
+    // Transport cargo
+    pub cargo: Vec<u16>,        // tags of loaded units
+    pub loaded_in: Option<u16>, // tag of transport carrying this unit
 }
 
 impl UnitState {
@@ -258,6 +266,10 @@ mod tests {
             mining_timer: 0,
             mining_target: None,
             collision_radius: 8,
+            rally_x: 0,
+            rally_y: 0,
+            cargo: Vec::new(),
+            loaded_in: None,
         }
     }
 

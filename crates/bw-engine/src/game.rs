@@ -75,17 +75,98 @@ pub enum EngineCommand {
     Select(Vec<u16>),
     SelectAdd(Vec<u16>),
     SelectRemove(Vec<u16>),
-    HotkeyAssign { group: u8 },
-    HotkeyRecall { group: u8 },
-    Move { x: u16, y: u16 },
-    Attack { target_tag: u16 },
+    HotkeyAssign {
+        group: u8,
+    },
+    HotkeyRecall {
+        group: u8,
+    },
+    Move {
+        x: u16,
+        y: u16,
+    },
+    Attack {
+        target_tag: u16,
+    },
     Stop,
-    Train { unit_type: u16 },
-    Build { x: u16, y: u16, unit_type: u16 },
-    UnitMorph { unit_type: u16 },
-    BuildingMorph { unit_type: u16 },
-    Research { tech_type: u8 },
-    Upgrade { upgrade_type: u8 },
+    Train {
+        unit_type: u16,
+    },
+    Build {
+        x: u16,
+        y: u16,
+        unit_type: u16,
+    },
+    UnitMorph {
+        unit_type: u16,
+    },
+    BuildingMorph {
+        unit_type: u16,
+    },
+    Research {
+        tech_type: u8,
+    },
+    Upgrade {
+        upgrade_type: u8,
+    },
+    /// Cast a spell at a target position. tech_type identifies the spell.
+    CastSpell {
+        tech_type: u8,
+        x: u16,
+        y: u16,
+    },
+    /// Set rally point for selected buildings.
+    SetRally {
+        x: u16,
+        y: u16,
+    },
+    /// Load selected units into a transport.
+    Load {
+        transport_tag: u16,
+    },
+    /// Unload all units from a transport.
+    UnloadAll,
+}
+
+/// Spatial hash grid for efficient collision detection.
+struct SpatialGrid {
+    cell_size: i32,
+    width: i32,
+    cells: Vec<Vec<usize>>,
+}
+
+impl SpatialGrid {
+    fn new(map_width_px: i32, map_height_px: i32, cell_size: i32) -> Self {
+        let width = (map_width_px / cell_size) + 1;
+        let height = (map_height_px / cell_size) + 1;
+        Self {
+            cell_size,
+            width,
+            cells: vec![Vec::new(); (width * height) as usize],
+        }
+    }
+
+    fn insert(&mut self, index: usize, x: i32, y: i32) {
+        let cx = (x / self.cell_size).max(0);
+        let cy = (y / self.cell_size).max(0);
+        let ci = (cy * self.width + cx) as usize;
+        if ci < self.cells.len() {
+            self.cells[ci].push(index);
+        }
+    }
+
+    fn query_neighbors(&self, x: i32, y: i32) -> impl Iterator<Item = usize> + '_ {
+        let cx = (x / self.cell_size).max(0);
+        let cy = (y / self.cell_size).max(0);
+        (-1..=1i32)
+            .flat_map(move |dy| (-1..=1i32).map(move |dx| (cx + dx, cy + dy)))
+            .filter(move |&(nx, ny)| nx >= 0 && ny >= 0)
+            .filter_map(move |(nx, ny)| {
+                let ci = (ny * self.width + nx) as usize;
+                self.cells.get(ci)
+            })
+            .flat_map(|cell| cell.iter().copied())
+    }
 }
 
 /// The game simulation state.
@@ -227,6 +308,10 @@ impl Game {
             mining_timer: 0,
             mining_target: None,
             collision_radius: collision_radius_for_type(unit_type, ut.is_building),
+            rally_x: x,
+            rally_y: y,
+            cargo: Vec::new(),
+            loaded_in: None,
         };
         self.units[index as usize] = Some(unit);
 
@@ -308,6 +393,10 @@ impl Game {
             mining_timer: 0,
             mining_target: None,
             collision_radius: 8,
+            rally_x: x,
+            rally_y: y,
+            cargo: Vec::new(),
+            loaded_in: None,
         });
     }
 
@@ -399,6 +488,18 @@ impl Game {
             EngineCommand::Upgrade { upgrade_type } => {
                 self.issue_upgrade(player_id, *upgrade_type);
             }
+            EngineCommand::CastSpell { tech_type, x, y } => {
+                self.issue_spell(player_id, *tech_type, *x as i32, *y as i32);
+            }
+            EngineCommand::SetRally { x, y } => {
+                self.issue_set_rally(player_id, *x as i32, *y as i32);
+            }
+            EngineCommand::Load { transport_tag } => {
+                self.issue_load(player_id, *transport_tag);
+            }
+            EngineCommand::UnloadAll => {
+                self.issue_unload_all(player_id);
+            }
         }
     }
 
@@ -452,7 +553,12 @@ impl Game {
         // Phase 6: Energy — casters regenerate energy.
         self.update_energy();
 
-        // Phase 7: Collision — push overlapping units apart.
+        // Phase 7: Shield regeneration (Protoss).
+        if self.current_frame.is_multiple_of(8) {
+            self.update_shield_regen();
+        }
+
+        // Phase 8: Collision — push overlapping units apart (spatial hash).
         if self.current_frame.is_multiple_of(4) {
             self.update_collision();
         }
@@ -716,6 +822,186 @@ impl Game {
         }
     }
 
+    // -- Spell casting --
+
+    fn issue_spell(&mut self, player_id: u8, tech_type: u8, x: i32, y: i32) {
+        // Deduct energy from the first selected caster.
+        let energy_cost = spell_energy_cost(tech_type);
+        if energy_cost == 0 {
+            return;
+        }
+
+        let tags: Vec<u16> = self.selection.selected_tags(player_id).to_vec();
+        let caster_idx = tags.iter().find_map(|tag| {
+            let uid = UnitId::from_tag(*tag);
+            let idx = uid.index() as usize;
+            self.units
+                .get(idx)?
+                .as_ref()
+                .filter(|u| u.alive && u.energy >= energy_cost)?;
+            Some(idx)
+        });
+
+        let Some(idx) = caster_idx else { return };
+
+        // Deduct energy.
+        if let Some(Some(unit)) = self.units.get_mut(idx) {
+            unit.energy -= energy_cost;
+        }
+
+        // Apply spell effect.
+        let (damage, radius, affects_shields) = spell_effect(tech_type);
+        if damage > 0 && radius > 0 {
+            self.apply_area_damage(x, y, radius, damage, player_id, affects_shields);
+        }
+    }
+
+    fn apply_area_damage(
+        &mut self,
+        x: i32,
+        y: i32,
+        radius: i32,
+        damage_fp8: i32,
+        caster_owner: u8,
+        affects_shields: bool,
+    ) {
+        let radius_sq = radius as i64 * radius as i64;
+        for slot in &mut self.units {
+            if let Some(unit) = slot
+                && unit.alive
+                && unit.owner != caster_owner
+            {
+                let dx = (unit.pixel_x - x) as i64;
+                let dy = (unit.pixel_y - y) as i64;
+                if dx * dx + dy * dy <= radius_sq {
+                    if affects_shields && unit.shields > 0 {
+                        let shield_dmg = damage_fp8.min(unit.shields);
+                        unit.shields -= shield_dmg;
+                        let remaining = damage_fp8 - shield_dmg;
+                        if remaining > 0 {
+                            unit.hp -= remaining;
+                        }
+                    } else {
+                        unit.hp -= damage_fp8;
+                    }
+                    if unit.hp <= 0 {
+                        unit.alive = false;
+                    }
+                }
+            }
+        }
+    }
+
+    // -- Rally points --
+
+    fn issue_set_rally(&mut self, player_id: u8, x: i32, y: i32) {
+        let tags: Vec<u16> = self.selection.selected_tags(player_id).to_vec();
+        for tag in &tags {
+            let uid = UnitId::from_tag(*tag);
+            if let Some(Some(unit)) = self.units.get_mut(uid.index() as usize)
+                && unit.alive
+                && unit.is_building
+            {
+                unit.rally_x = x;
+                unit.rally_y = y;
+            }
+        }
+    }
+
+    // -- Transport --
+
+    fn issue_load(&mut self, player_id: u8, transport_tag: u16) {
+        let tags: Vec<u16> = self.selection.selected_tags(player_id).to_vec();
+        let transport_uid = UnitId::from_tag(transport_tag);
+        let ti = transport_uid.index() as usize;
+
+        // Check transport is valid and has cargo space (max 8).
+        let can_load = self
+            .units
+            .get(ti)
+            .and_then(|s| s.as_ref())
+            .is_some_and(|u| {
+                u.alive
+                    && u.owner == player_id
+                    && u.cargo.len() < 8
+                    && is_transport_type(u.unit_type)
+            });
+
+        if !can_load {
+            return;
+        }
+
+        for tag in &tags {
+            let uid = UnitId::from_tag(*tag);
+            let idx = uid.index() as usize;
+            if idx == ti {
+                continue;
+            }
+            let can_board = self
+                .units
+                .get(idx)
+                .and_then(|s| s.as_ref())
+                .is_some_and(|u| u.alive && !u.is_building && !u.is_air && u.loaded_in.is_none());
+            if !can_board {
+                continue;
+            }
+
+            // Check cargo space again.
+            let space = self.units[ti].as_ref().map(|u| u.cargo.len()).unwrap_or(8);
+            if space >= 8 {
+                break;
+            }
+
+            if let Some(Some(transport)) = self.units.get_mut(ti) {
+                transport.cargo.push(*tag);
+            }
+            if let Some(Some(unit)) = self.units.get_mut(idx) {
+                unit.loaded_in = Some(transport_tag);
+                unit.move_state = MoveState::AtRest;
+                unit.velocity = crate::fp8::XY::ZERO;
+            }
+        }
+    }
+
+    fn issue_unload_all(&mut self, player_id: u8) {
+        let tags: Vec<u16> = self.selection.selected_tags(player_id).to_vec();
+        for tag in &tags {
+            let uid = UnitId::from_tag(*tag);
+            let ti = uid.index() as usize;
+
+            let cargo = self
+                .units
+                .get(ti)
+                .and_then(|s| s.as_ref())
+                .filter(|u| u.alive)
+                .map(|u| (u.cargo.clone(), u.pixel_x, u.pixel_y))
+                .unwrap_or_default();
+
+            if cargo.0.is_empty() {
+                continue;
+            }
+
+            let (loaded_tags, tx, ty) = cargo;
+
+            // Clear cargo.
+            if let Some(Some(transport)) = self.units.get_mut(ti) {
+                transport.cargo.clear();
+            }
+
+            // Unload each unit near the transport.
+            for (i, loaded_tag) in loaded_tags.iter().enumerate() {
+                let loaded_uid = UnitId::from_tag(*loaded_tag);
+                let li = loaded_uid.index() as usize;
+                if let Some(Some(unit)) = self.units.get_mut(li) {
+                    unit.loaded_in = None;
+                    unit.pixel_x = tx + (i as i32 % 4) * 16 - 24;
+                    unit.pixel_y = ty + (i as i32 / 4) * 16 - 8;
+                    unit.exact_position = crate::fp8::XY::from_pixels(unit.pixel_x, unit.pixel_y);
+                }
+            }
+        }
+    }
+
     // -- Simulation phases --
 
     fn update_combat(&mut self) {
@@ -825,62 +1111,124 @@ impl Game {
             if dist_sq <= range_sq && attacker.weapon_cooldown == 0 {
                 self.debug_fires += 1;
 
-                // Base damage = amount * factor + upgrade bonus.
+                // Terrain height miss chance: 47% miss when attacking uphill.
+                let attacker_height = self.map.ground_height_px(
+                    attacker.pixel_x.max(0) as u32,
+                    attacker.pixel_y.max(0) as u32,
+                );
+                let target_height = self
+                    .map
+                    .ground_height_px(tx.max(0) as u32, ty.max(0) as u32);
+                let height_miss = target_height > attacker_height
+                    && (self
+                        .current_frame
+                        .wrapping_mul(1103515245)
+                        .wrapping_add(12345)
+                        % 100)
+                        < 47;
+
+                // Copy attacker data before mutable borrows.
                 let attacker_owner = attacker.owner;
-                let upgrade_bonus = weapon.damage_bonus as i32
-                    * self.player_states[attacker_owner as usize]
-                        .upgrade_level(weapon.damage_upgrade) as i32;
-                let base_damage = weapon.damage_amount as i32 * weapon.damage_factor.max(1) as i32
-                    + upgrade_bonus;
+                let attacker_unit_type = attacker.unit_type;
+                let weapon_copy = *weapon;
 
-                // Apply damage type modifier vs unit size.
-                let (num, den) = weapon.damage_type.size_modifier(target_size);
-                let modified_damage = base_damage * num as i32 / den as i32;
-
-                // Subtract armor (with upgrade bonus).
-                let armor_upgrade_id = self
-                    .data
-                    .unit_type(self.units[ti].as_ref().map(|u| u.unit_type).unwrap_or(0))
-                    .map(|ut| ut.armor_upgrade)
-                    .unwrap_or(0);
-                let armor_total = target_armor as i32
-                    + self.units[ti]
-                        .as_ref()
-                        .map(|u| {
-                            self.player_states[u.owner as usize].upgrade_level(armor_upgrade_id)
-                                as i32
-                        })
-                        .unwrap_or(0);
-                let effective_damage = if weapon.damage_type == crate::dat::DamageType::IgnoreArmor
-                {
-                    modified_damage.max(1)
+                if height_miss {
+                    if let Some(Some(unit)) = self.units.get_mut(attacker_idx) {
+                        unit.weapon_cooldown = weapon_copy.cooldown as u16;
+                    }
                 } else {
-                    (modified_damage - armor_total).max(1)
-                };
+                    let upgrade_bonus = weapon_copy.damage_bonus as i32
+                        * self.player_states[attacker_owner as usize]
+                            .upgrade_level(weapon_copy.damage_upgrade)
+                            as i32;
+                    let base_damage = weapon_copy.damage_amount as i32
+                        * weapon_copy.damage_factor.max(1) as i32
+                        + upgrade_bonus;
 
-                let damage_fp8 = effective_damage * 256;
-
-                // Apply damage: shields first (shields ignore damage type), then HP.
-                if let Some(Some(target)) = self.units.get_mut(ti) {
-                    if target.shields > 0 {
-                        // Shields absorb damage first (at full damage, ignoring armor/type).
-                        let shield_damage = damage_fp8.min(target.shields);
-                        target.shields -= shield_damage;
-                        let remaining = damage_fp8 - shield_damage;
-                        if remaining > 0 {
-                            target.hp -= remaining;
-                        }
+                    let max_hits = if target_is_air {
+                        self.data
+                            .unit_type(attacker_unit_type)
+                            .map(|ut| ut.max_air_hits)
+                            .unwrap_or(1)
                     } else {
-                        target.hp -= damage_fp8;
+                        self.data
+                            .unit_type(attacker_unit_type)
+                            .map(|ut| ut.max_ground_hits)
+                            .unwrap_or(1)
                     }
-                    if target.hp <= 0 {
-                        target.alive = false;
-                    }
-                }
+                    .max(1);
 
-                // Reset cooldown.
-                if let Some(Some(unit)) = self.units.get_mut(attacker_idx) {
-                    unit.weapon_cooldown = weapon.cooldown as u16;
+                    let (num, den) = weapon_copy.damage_type.size_modifier(target_size);
+                    let modified_damage = base_damage * num as i32 / den as i32;
+
+                    let armor_upgrade_id = self
+                        .data
+                        .unit_type(self.units[ti].as_ref().map(|u| u.unit_type).unwrap_or(0))
+                        .map(|ut| ut.armor_upgrade)
+                        .unwrap_or(0);
+                    let target_owner_idx = self.units[ti]
+                        .as_ref()
+                        .map(|u| u.owner as usize)
+                        .unwrap_or(0);
+                    let armor_total = target_armor as i32
+                        + self.player_states[target_owner_idx].upgrade_level(armor_upgrade_id)
+                            as i32;
+                    let per_hit = if weapon_copy.damage_type == crate::dat::DamageType::IgnoreArmor
+                    {
+                        modified_damage.max(1)
+                    } else {
+                        (modified_damage - armor_total).max(1)
+                    };
+                    let total_dmg = per_hit * max_hits as i32 * 256;
+
+                    apply_damage_to_unit(&mut self.units, ti, total_dmg);
+
+                    // Splash.
+                    if weapon_copy.is_splash() {
+                        let outer = weapon_copy.outer_splash as i64;
+                        let medium = weapon_copy.medium_splash as i64;
+                        let inner = weapon_copy.inner_splash as i64;
+                        for (si, slot) in self.units.iter_mut().enumerate() {
+                            if si == ti {
+                                continue;
+                            }
+                            if let Some(su) = slot
+                                && su.alive
+                                && su.owner != attacker_owner
+                            {
+                                let sdx = (su.pixel_x - tx) as i64;
+                                let sdy = (su.pixel_y - ty) as i64;
+                                let sd = sdx * sdx + sdy * sdy;
+                                let splash_dmg = if sd <= inner * inner {
+                                    total_dmg
+                                } else if sd <= medium * medium {
+                                    total_dmg / 2
+                                } else if sd <= outer * outer {
+                                    total_dmg / 4
+                                } else {
+                                    0
+                                };
+                                if splash_dmg > 0 {
+                                    if su.shields > 0 {
+                                        let s = splash_dmg.min(su.shields);
+                                        su.shields -= s;
+                                        if splash_dmg > s {
+                                            su.hp -= splash_dmg - s;
+                                        }
+                                    } else {
+                                        su.hp -= splash_dmg;
+                                    }
+                                    if su.hp <= 0 {
+                                        su.alive = false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(Some(unit)) = self.units.get_mut(attacker_idx) {
+                        unit.weapon_cooldown = weapon_copy.cooldown as u16;
+                    }
                 }
             } else if dist_sq > range_sq {
                 self.debug_out_of_range += 1;
@@ -928,8 +1276,8 @@ impl Game {
     }
 
     fn update_production(&mut self) {
-        // Collect units to spawn: (unit_type, owner, x, y).
-        let mut spawns: Vec<(u16, u8, i32, i32)> = Vec::new();
+        // Collect units to spawn: (unit_type, owner, spawn_x, spawn_y, rally_x, rally_y).
+        let mut spawns: Vec<(u16, u8, i32, i32, i32, i32)> = Vec::new();
 
         for slot in &mut self.units {
             let Some(unit) = slot else { continue };
@@ -938,7 +1286,6 @@ impl Game {
             }
 
             if unit.build_timer == 0 {
-                // Start building the first item in queue.
                 let training_type = unit.build_queue[0];
                 let build_time = self
                     .data
@@ -949,18 +1296,37 @@ impl Game {
             } else {
                 unit.build_timer -= 1;
                 if unit.build_timer == 0 {
-                    // Training complete — spawn unit.
                     let trained_type = unit.build_queue.remove(0);
-                    // Spawn near the building (offset by 32px).
                     let spawn_x = unit.pixel_x + 32;
                     let spawn_y = unit.pixel_y + 32;
-                    spawns.push((trained_type, unit.owner, spawn_x, spawn_y));
+                    spawns.push((
+                        trained_type,
+                        unit.owner,
+                        spawn_x,
+                        spawn_y,
+                        unit.rally_x,
+                        unit.rally_y,
+                    ));
                 }
             }
         }
 
-        for (unit_type, owner, x, y) in spawns {
-            self.create_unit(unit_type, owner, x, y);
+        for (unit_type, owner, x, y, rally_x, rally_y) in spawns {
+            if let Some(tag) = self.create_unit(unit_type, owner, x, y) {
+                // Move spawned unit to rally point if set.
+                let uid = UnitId::from_tag(tag);
+                let idx = uid.index() as usize;
+                let has_rally = rally_x != x || rally_y != y;
+                if has_rally
+                    && let Some(Some(unit)) = self.units.get_mut(idx)
+                    && !unit.is_building
+                {
+                    unit.move_target = Some((rally_x as u16, rally_y as u16));
+                    unit.move_state = MoveState::Moving;
+                    unit.waypoints = vec![(rally_x, rally_y)];
+                    unit.waypoint_index = 0;
+                }
+            }
         }
     }
 
@@ -1035,48 +1401,63 @@ impl Game {
         }
     }
 
+    // -- Shield regeneration --
+
+    fn update_shield_regen(&mut self) {
+        // Protoss shields regenerate: +7 fp8 per 8 frames ≈ ~0.2 shield/sec.
+        for slot in &mut self.units {
+            if let Some(unit) = slot
+                && unit.alive
+                && unit.max_shields > 0
+                && unit.shields < unit.max_shields
+            {
+                unit.shields = (unit.shields + 7).min(unit.max_shields);
+            }
+        }
+    }
+
     // -- Collision --
 
     fn update_collision(&mut self) {
-        // Simple separation: push overlapping units apart.
-        // Only check ground units (air units don't collide).
-        // Run every 4 frames for performance.
-        let count = self.units.len();
-        for i in 0..count {
-            let (ax, ay, ar, a_alive, a_air, a_building) = {
-                match &self.units[i] {
-                    Some(u) if u.alive && !u.is_air && !u.is_building => (
+        // Spatial hash grid for O(n) collision instead of O(n²).
+        let map_w = self.map.width_px() as i32;
+        let map_h = self.map.height_px() as i32;
+        let mut grid = SpatialGrid::new(map_w, map_h, 32);
+
+        // Insert all ground units into grid.
+        for (i, slot) in self.units.iter().enumerate() {
+            if let Some(u) = slot
+                && u.alive
+                && !u.is_air
+            {
+                grid.insert(i, u.pixel_x, u.pixel_y);
+            }
+        }
+
+        // Collect push operations to avoid borrow conflicts.
+        let mut pushes: Vec<(usize, i32, i32)> = Vec::new();
+
+        for i in 0..self.units.len() {
+            let (ax, ay, ar) = match &self.units[i] {
+                Some(u) if u.alive && !u.is_air && !u.is_building => {
+                    (u.pixel_x, u.pixel_y, u.collision_radius as i32)
+                }
+                _ => continue,
+            };
+
+            for j in grid.query_neighbors(ax, ay) {
+                if j <= i {
+                    continue;
+                }
+                let (bx, by, br, b_building) = match &self.units[j] {
+                    Some(u) if u.alive && !u.is_air => (
                         u.pixel_x,
                         u.pixel_y,
                         u.collision_radius as i32,
-                        true,
-                        u.is_air,
                         u.is_building,
                     ),
                     _ => continue,
-                }
-            };
-            if !a_alive || a_air || a_building {
-                continue;
-            }
-
-            for j in (i + 1)..count {
-                let (bx, by, br, b_alive, b_air, b_building) = {
-                    match &self.units[j] {
-                        Some(u) if u.alive && !u.is_air => (
-                            u.pixel_x,
-                            u.pixel_y,
-                            u.collision_radius as i32,
-                            true,
-                            u.is_air,
-                            u.is_building,
-                        ),
-                        _ => continue,
-                    }
                 };
-                if !b_alive || b_air {
-                    continue;
-                }
 
                 let dx = ax - bx;
                 let dy = ay - by;
@@ -1085,39 +1466,28 @@ impl Game {
                 let min_dist_sq = min_dist as i64 * min_dist as i64;
 
                 if dist_sq < min_dist_sq && dist_sq > 0 {
-                    // Push apart. Buildings don't move.
                     let dist = (dist_sq as f64).sqrt() as i32;
                     let overlap = min_dist - dist;
                     let push = (overlap / 2).max(1);
-
                     if dist > 0 {
                         let nx = dx * push / dist;
                         let ny = dy * push / dist;
-
-                        if !b_building {
-                            if let Some(Some(ua)) = self.units.get_mut(i) {
-                                ua.pixel_x += nx;
-                                ua.pixel_y += ny;
-                                ua.exact_position =
-                                    crate::fp8::XY::from_pixels(ua.pixel_x, ua.pixel_y);
-                            }
-                            if let Some(Some(ub)) = self.units.get_mut(j) {
-                                ub.pixel_x -= nx;
-                                ub.pixel_y -= ny;
-                                ub.exact_position =
-                                    crate::fp8::XY::from_pixels(ub.pixel_x, ub.pixel_y);
-                            }
+                        if b_building {
+                            pushes.push((i, nx * 2, ny * 2));
                         } else {
-                            // Only push unit A away from building B.
-                            if let Some(Some(ua)) = self.units.get_mut(i) {
-                                ua.pixel_x += nx * 2;
-                                ua.pixel_y += ny * 2;
-                                ua.exact_position =
-                                    crate::fp8::XY::from_pixels(ua.pixel_x, ua.pixel_y);
-                            }
+                            pushes.push((i, nx, ny));
+                            pushes.push((j, -nx, -ny));
                         }
                     }
                 }
+            }
+        }
+
+        for (idx, dx, dy) in pushes {
+            if let Some(Some(u)) = self.units.get_mut(idx) {
+                u.pixel_x += dx;
+                u.pixel_y += dy;
+                u.exact_position = crate::fp8::XY::from_pixels(u.pixel_x, u.pixel_y);
             }
         }
     }
@@ -1126,6 +1496,55 @@ impl Game {
 // ---------------------------------------------------------------------------
 // Unit type classification helpers
 // ---------------------------------------------------------------------------
+
+fn apply_damage_to_unit(units: &mut [Option<UnitState>], idx: usize, damage_fp8: i32) {
+    if let Some(Some(target)) = units.get_mut(idx) {
+        if target.shields > 0 {
+            let shield_dmg = damage_fp8.min(target.shields);
+            target.shields -= shield_dmg;
+            let remaining = damage_fp8 - shield_dmg;
+            if remaining > 0 {
+                target.hp -= remaining;
+            }
+        } else {
+            target.hp -= damage_fp8;
+        }
+        if target.hp <= 0 {
+            target.alive = false;
+        }
+    }
+}
+
+fn is_transport_type(unit_type: u16) -> bool {
+    matches!(unit_type, 11 | 69 | 42) // Dropship, Shuttle, Overlord
+}
+
+/// Energy cost for a spell (in fp8). Returns 0 if not a known spell.
+fn spell_energy_cost(tech_type: u8) -> i32 {
+    match tech_type {
+        19 => 75 * 256,  // Psionic Storm
+        2 => 100 * 256,  // EMP
+        7 => 75 * 256,   // Irradiate
+        15 => 150 * 256, // Plague
+        17 => 75 * 256,  // Ensnare
+        14 => 100 * 256, // Dark Swarm
+        22 => 100 * 256, // Stasis Field
+        6 => 100 * 256,  // Defensive Matrix
+        _ => 0,
+    }
+}
+
+/// Spell effect: (damage_fp8, radius_pixels, affects_shields).
+fn spell_effect(tech_type: u8) -> (i32, i32, bool) {
+    match tech_type {
+        19 => (112 * 256, 48, true),  // Psionic Storm: 112 damage over area
+        2 => (0, 64, false),          // EMP: drains shields (handled separately — 0 HP damage)
+        7 => (250 * 256, 0, false),   // Irradiate: 250 damage to single target (no AoE here)
+        15 => (300 * 256, 64, false), // Plague: 300 damage over area (ignores shields)
+        17 => (0, 64, false),         // Ensnare: no damage (slow effect)
+        _ => (0, 0, false),
+    }
+}
 
 fn is_worker_type(unit_type: u16) -> bool {
     matches!(unit_type, 7 | 41 | 64) // SCV, Drone, Probe
@@ -1240,6 +1659,9 @@ mod tests {
             damage_type: crate::dat::DamageType::Normal,
             damage_upgrade: 7, // Infantry Weapons
             max_range: 128,    // 4 tiles
+            inner_splash: 0,
+            medium_splash: 0,
+            outer_splash: 0,
         };
         let mut weapon_types = vec![WeaponType::default(); 130];
         weapon_types[0] = marine_weapon;

@@ -74,6 +74,9 @@ fn synthetic_game_data() -> GameData {
         damage_type: bw_engine::DamageType::Normal,
         damage_upgrade: 7,
         max_range: 128,
+        inner_splash: 0,
+        medium_splash: 0,
+        outer_splash: 0,
     };
     let weapon_types = vec![default_weapon; 130];
 

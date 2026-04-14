@@ -86,6 +86,16 @@ pub struct WeaponType {
     pub damage_type: DamageType,
     pub damage_upgrade: u8, // upgrade ID that increases this weapon's damage
     pub max_range: u32,     // in pixels (not fp8)
+    pub inner_splash: u16,  // pixels — full damage radius
+    pub medium_splash: u16, // pixels — 50% damage radius
+    pub outer_splash: u16,  // pixels — 25% damage radius
+}
+
+impl WeaponType {
+    /// Whether this weapon deals splash (area) damage.
+    pub fn is_splash(&self) -> bool {
+        self.outer_splash > 0
+    }
 }
 
 /// Weapon damage type for size-based modifiers.
@@ -488,6 +498,9 @@ fn parse_weapons_dat(data: &[u8]) -> Result<Vec<WeaponType>> {
             damage_type: DamageType::from_u8(data[W_DAMAGE_TYPE + i]),
             damage_upgrade: data[W_DAMAGE_UPGRADE + i],
             max_range: read_u32_le(data, W_MAX_RANGE + i * 4),
+            inner_splash: read_u16_le(data, W_INNER_SPLASH + i * 2),
+            medium_splash: read_u16_le(data, W_MEDIUM_SPLASH + i * 2),
+            outer_splash: read_u16_le(data, W_OUTER_SPLASH + i * 2),
         });
     }
 
