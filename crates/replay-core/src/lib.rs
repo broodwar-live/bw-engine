@@ -9,6 +9,7 @@ pub mod phases;
 pub mod section;
 pub mod similarity;
 pub mod skill;
+pub mod stats;
 pub mod timeline;
 
 use analysis::{ApmSample, BuildOrderEntry, PlayerApm};

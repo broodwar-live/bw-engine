@@ -12,10 +12,19 @@
   .file-input label { font-size: 0.8rem; color: #999; }
   .file-input input { font-size: 0.85rem; }
   #info { font-size: 0.85rem; margin-bottom: 8px; min-height: 1.2em; color: #aaa; }
+  #meta { font-size: 0.8rem; margin-bottom: 8px; color: #888; min-height: 1.2em; }
+  #meta .matchup { color: #00d4ff; font-weight: bold; }
+  #meta .winner { color: #66bb6a; }
+  #meta .phase { color: #ffa726; }
   #controls { margin-bottom: 8px; display: flex; gap: 8px; align-items: center; }
   #controls button { padding: 4px 12px; font-size: 0.85rem; cursor: pointer; background: #16213e; color: #e0e0e0; border: 1px solid #444; border-radius: 3px; }
   #controls button:hover { background: #0f3460; }
   #controls span { font-size: 0.85rem; color: #aaa; }
+  #resources { font-size: 0.8rem; margin-bottom: 6px; min-height: 1.2em; display: flex; gap: 20px; }
+  .res-player { display: flex; gap: 8px; }
+  .res-player .min { color: #4fc3f7; }
+  .res-player .gas { color: #66bb6a; }
+  .res-player .supply { color: #ccc; }
   canvas { border: 1px solid #333; background: #111; display: block; }
   .legend { display: flex; gap: 12px; margin-top: 6px; font-size: 0.75rem; color: #888; }
   .legend span::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
@@ -34,6 +43,10 @@
   <div class="file-input">
     <label>Replay (.rep)</label>
     <input type="file" id="repFile" accept=".rep">
+  </div>
+  <div class="file-input">
+    <label>Map (.scx/.scm)</label>
+    <input type="file" id="scxFile" accept=".scx,.scm">
   </div>
   <div class="file-input">
     <label>units.dat</label>
@@ -58,6 +71,7 @@
 </div>
 
 <div id="info">Load a .rep file to begin.</div>
+<div id="meta"></div>
 <div id="controls" style="display:none">
   <button id="playBtn">Play</button>
   <button id="pauseBtn">Pause</button>
@@ -66,6 +80,7 @@
   <input type="range" id="speedSlider" min="1" max="32" value="4" style="width:120px">
   <span id="speedLabel">4x</span>
 </div>
+<div id="resources"></div>
 <canvas id="canvas" width="640" height="480"></canvas>
 <div class="legend">
   <span class="p0">Player 1</span>
@@ -76,10 +91,11 @@
 </div>
 
 <script type="module">
-import init, { parseReplay, GameMap, GameSim } from '../pkg/replay_wasm.js';
+import init, { parseReplay, GameMap, GameSim, ScxMapFile } from '../pkg/replay_wasm.js';
 
 const PLAYER_COLORS = ['#4fc3f7','#ef5350','#66bb6a','#ffa726','#ab47bc','#78909c','#ffee58','#8d6e63'];
 const NEUTRAL_COLOR = '#555';
+const SHIELD_COLOR = '#42a5f5';
 
 let wasm;
 let replay = null;
@@ -97,7 +113,9 @@ let cv5Bytes = null, vf4Bytes = null;
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const info = document.getElementById('info');
+const metaDiv = document.getElementById('meta');
 const controls = document.getElementById('controls');
+const resources = document.getElementById('resources');
 const frameInfo = document.getElementById('frameInfo');
 const speedSlider = document.getElementById('speedSlider');
 const speedLabel = document.getElementById('speedLabel');
@@ -108,10 +126,31 @@ async function readFile(input) {
   return new Uint8Array(await file.arrayBuffer());
 }
 
+function showMetadata() {
+  if (!replay) return;
+  const h = replay.header;
+  const players = h.players.map(p => `${p.name} (${p.race.charAt(0).toUpperCase()})`).join(' vs ');
+  const duration = (h.frame_count / 23.81).toFixed(0);
+
+  // Detect matchup from player races.
+  let matchup = '';
+  if (h.players.length === 2) {
+    const codes = h.players.map(p => {
+      if (p.race === 'Terran') return 'T';
+      if (p.race === 'Protoss') return 'P';
+      if (p.race === 'Zerg') return 'Z';
+      return '?';
+    }).sort();
+    matchup = `<span class="matchup">${codes[0]}v${codes[1]}</span> &mdash; `;
+  }
+
+  metaDiv.innerHTML = `${matchup}${players} on <b>${h.map_name}</b> &mdash; ${duration}s`;
+}
+
 function tryBuildSim() {
   if (!repBytes || !replay) return;
   if (!unitsDatBytes || !flingyDatBytes) {
-    info.textContent = `${replay.header.map_name} — ${replay.header.players.map(p => p.name).join(' vs ')} (${totalFrames} frames). Add units.dat + flingy.dat for simulation.`;
+    info.textContent = `${replay.header.map_name} — Add units.dat + flingy.dat for simulation.`;
     return;
   }
 
@@ -132,7 +171,7 @@ function tryBuildSim() {
   try {
     const weapons = weaponsDatBytes || new Uint8Array(0);
     gameSim = new GameSim(chkData, cv5, vf4, unitsDatBytes, flingyDatBytes, weapons, repBytes);
-    info.textContent = `${replay.header.map_name} — ${replay.header.players.map(p => p.name).join(' vs ')} — ${gameSim.unitCount} initial units — Ready.`;
+    info.textContent = `${gameSim.unitCount} initial units — Ready.`;
     controls.style.display = 'flex';
     resizeCanvas();
     drawFrame();
@@ -157,8 +196,6 @@ function resizeCanvas() {
 function drawFrame() {
   if (!gameSim) return;
   const scale = parseFloat(canvas.dataset.scale);
-  const mapW = parseFloat(canvas.dataset.mapW);
-  const mapH = parseFloat(canvas.dataset.mapH);
 
   ctx.fillStyle = '#111';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -168,7 +205,7 @@ function drawFrame() {
     const mw = gameMap.width * 4;
     const mh = gameMap.height * 4;
     const grid = gameMap.walkabilityGrid();
-    const tileScale = scale * 8; // each mini-tile = 8px
+    const tileScale = scale * 8;
     for (let my = 0; my < mh; my++) {
       for (let mx = 0; mx < mw; mx++) {
         if (!grid[my * mw + mx]) {
@@ -187,14 +224,17 @@ function drawFrame() {
     const py = data[i * 6 + 1];
     const unitType = data[i * 6 + 2];
     const owner = data[i * 6 + 3];
+    const hp = data[i * 6 + 4];
+    const maxHp = data[i * 6 + 5];
 
     const sx = px * scale;
     const sy = py * scale;
 
     const isBuilding = unitType >= 106 && unitType <= 202;
     const isResource = unitType >= 176 && unitType <= 199;
+    const isAir = [8,9,11,12,42,43,44,45,47,58,60,62,69,70,71,72,73,84].includes(unitType);
     const color = owner >= 8 || isResource ? NEUTRAL_COLOR : (PLAYER_COLORS[owner] || NEUTRAL_COLOR);
-    const radius = isBuilding ? 4 : 2.5;
+    const radius = isBuilding ? 4 : isAir ? 3 : 2.5;
 
     ctx.fillStyle = color;
     if (isBuilding) {
@@ -204,22 +244,41 @@ function drawFrame() {
       ctx.arc(sx, sy, radius, 0, Math.PI * 2);
       ctx.fill();
     }
+
+    // Air unit indicator: ring.
+    if (isAir && !isResource) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius + 2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // HP bar for damaged units.
+    if (maxHp > 0 && hp < maxHp && hp > 0) {
+      const hpRatio = hp / maxHp;
+      const barW = radius * 3;
+      ctx.fillStyle = hpRatio > 0.5 ? '#4caf50' : hpRatio > 0.25 ? '#ff9800' : '#f44336';
+      ctx.fillRect(sx - barW / 2, sy - radius - 3, barW * hpRatio, 1.5);
+      ctx.fillStyle = '#333';
+      ctx.fillRect(sx - barW / 2 + barW * hpRatio, sy - radius - 3, barW * (1 - hpRatio), 1.5);
+    }
   }
 
   // Player resources.
   const pd = gameSim.playerData();
-  let resText = '';
+  let resHtml = '';
   for (let p = 0; p < 2; p++) {
     const m = pd[p * 4];
     const g = pd[p * 4 + 1];
     const su = pd[p * 4 + 2];
     const sm = pd[p * 4 + 3];
-    if (m || g || su || sm) {
-      resText += `P${p+1}: ${m}m ${g}g ${su}/${sm}  `;
-    }
+    const pName = replay.header.players[p] ? replay.header.players[p].name : `P${p+1}`;
+    resHtml += `<div class="res-player"><b style="color:${PLAYER_COLORS[p]}">${pName}</b> <span class="min">${m}m</span> <span class="gas">${g}g</span> <span class="supply">${su}/${sm}</span></div>`;
   }
+  resources.innerHTML = resHtml;
 
-  frameInfo.textContent = `Frame ${gameSim.currentFrame} / ${totalFrames} — ${unitCount} units  ${resText}`;
+  frameInfo.textContent = `Frame ${gameSim.currentFrame} / ${totalFrames} — ${unitCount} units`;
 }
 
 function animate() {
@@ -242,10 +301,22 @@ document.getElementById('repFile').addEventListener('change', async (e) => {
   try {
     replay = parseReplay(repBytes);
     totalFrames = replay.header.frame_count;
-    info.textContent = `Parsed: ${replay.header.map_name} — ${replay.header.players.map(p => p.name).join(' vs ')} (${totalFrames} frames)`;
+    info.textContent = `Parsed: ${replay.header.map_name} (${totalFrames} frames)`;
+    showMetadata();
     tryBuildSim();
   } catch (err) {
     info.textContent = `Parse error: ${err.message}`;
+  }
+});
+
+document.getElementById('scxFile').addEventListener('change', async (e) => {
+  const scxBytes = await readFile(e.target);
+  if (!scxBytes) return;
+  try {
+    const scx = new ScxMapFile(scxBytes);
+    info.textContent = `Map loaded: ${scx.width}x${scx.height} tiles, ${scx.unitCount} preplaced units, tileset ${scx.tilesetIndex}`;
+  } catch (err) {
+    info.textContent = `SCX error: ${err.message}`;
   }
 });
 

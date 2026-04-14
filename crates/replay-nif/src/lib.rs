@@ -14,6 +14,9 @@
 //!   def extract_build_order(_data), do: :erlang.nif_error(:not_loaded)
 //!   def calculate_apm(_data), do: :erlang.nif_error(:not_loaded)
 //!   def apm_over_time(_data, _window_secs, _step_secs), do: :erlang.nif_error(:not_loaded)
+//!   def detect_phases(_data), do: :erlang.nif_error(:not_loaded)
+//!   def estimate_skill(_data), do: :erlang.nif_error(:not_loaded)
+//!   def compare_build_orders(_data_a, _data_b, _player_index), do: :erlang.nif_error(:not_loaded)
 //! end
 //! ```
 
@@ -69,12 +72,14 @@ mod atoms {
         timeline,
         command_count,
         map_data,
+        metadata,
         engine,
         frame_count,
         duration_secs,
         start_time,
         game_title,
         map_name,
+        map_name_raw,
         map_width,
         map_height,
         game_speed,
@@ -102,6 +107,54 @@ mod atoms {
         buildings,
         techs,
         upgrades,
+
+        // Metadata
+        matchup,
+        code,
+        mirror,
+        result,
+        winner,
+        player_name,
+        is_1v1,
+        player_count,
+
+        // Phases
+        phases,
+        phase,
+        opening,
+        early_game,
+        mid_game,
+        late_game,
+        start_frame,
+        start_seconds,
+        end_frame,
+        end_seconds,
+        landmarks,
+        first_gas,
+        first_tech,
+        first_tier2,
+        first_tier3,
+        first_expansion,
+
+        // Skill
+        efficiency,
+        hotkey_assigns_per_min,
+        hotkey_recalls_per_min,
+        apm_consistency,
+        first_action_frame,
+        skill_score,
+        tier,
+        beginner,
+        intermediate,
+        advanced,
+        expert,
+        professional,
+
+        // Similarity
+        edit_similarity,
+        lcs_similarity,
+        len_a,
+        len_b,
     }
 }
 
@@ -202,6 +255,111 @@ fn apm_over_time<'a>(
 }
 
 // ---------------------------------------------------------------------------
+// NIF: detect_phases
+// ---------------------------------------------------------------------------
+
+/// Detect game phases from a replay.
+///
+/// Returns `{:ok, %{phases, landmarks}}` or `{:error, reason}`.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn detect_phases<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Term<'a>> {
+    match replay_core::parse(data.as_slice()) {
+        Ok(replay) => {
+            let analysis =
+                replay_core::phases::detect_phases(&replay.build_order, replay.header.frame_count);
+            let map = encode_phase_analysis(env, &analysis);
+            Ok((atoms::ok(), map).encode(env))
+        }
+        Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NIF: estimate_skill
+// ---------------------------------------------------------------------------
+
+/// Estimate player skill from a replay.
+///
+/// Returns `{:ok, [skill_profile]}` or `{:error, reason}`.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn estimate_skill<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Term<'a>> {
+    match replay_core::parse(data.as_slice()) {
+        Ok(replay) => {
+            let samples = replay.apm_over_time(60.0, 10.0);
+            let profiles = replay_core::skill::estimate_skill(
+                &replay.commands,
+                &replay.player_apm,
+                &samples,
+                replay.header.frame_count,
+            );
+            let list = encode_skill_profiles(env, &profiles);
+            Ok((atoms::ok(), list).encode(env))
+        }
+        Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NIF: compare_build_orders
+// ---------------------------------------------------------------------------
+
+/// Compare build orders from two replays for a given player index (0 or 1).
+///
+/// Returns `{:ok, %{edit_similarity, lcs_similarity, len_a, len_b}}` or `{:error, reason}`.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn compare_build_orders<'a>(
+    env: Env<'a>,
+    data_a: rustler::Binary,
+    data_b: rustler::Binary,
+    player_index: u8,
+) -> NifResult<Term<'a>> {
+    let replay_a = replay_core::parse(data_a.as_slice());
+    let replay_b = replay_core::parse(data_b.as_slice());
+
+    match (replay_a, replay_b) {
+        (Ok(a), Ok(b)) => {
+            let pid_a = a
+                .header
+                .players
+                .get(player_index as usize)
+                .map(|p| p.player_id)
+                .unwrap_or(0);
+            let pid_b = b
+                .header
+                .players
+                .get(player_index as usize)
+                .map(|p| p.player_id)
+                .unwrap_or(0);
+
+            let seq_a =
+                replay_core::similarity::BuildSequence::from_build_order(&a.build_order, pid_a);
+            let seq_b =
+                replay_core::similarity::BuildSequence::from_build_order(&b.build_order, pid_b);
+            let result = replay_core::similarity::compare(&seq_a, &seq_b);
+
+            let map = Term::map_from_pairs(
+                env,
+                &[
+                    (
+                        atoms::edit_similarity().encode(env),
+                        result.edit_similarity.encode(env),
+                    ),
+                    (
+                        atoms::lcs_similarity().encode(env),
+                        result.lcs_similarity.encode(env),
+                    ),
+                    (atoms::len_a().encode(env), result.len_a.encode(env)),
+                    (atoms::len_b().encode(env), result.len_b.encode(env)),
+                ],
+            )
+            .unwrap();
+            Ok((atoms::ok(), map).encode(env))
+        }
+        (Err(e), _) | (_, Err(e)) => Ok((atoms::error(), e.to_string()).encode(env)),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Encoding helpers — Rust types → Elixir maps/lists
 // ---------------------------------------------------------------------------
 
@@ -210,6 +368,7 @@ fn encode_replay<'a>(env: Env<'a>, replay: &replay_core::Replay) -> Term<'a> {
     let build_order = encode_build_order(env, &replay.build_order);
     let player_apm = encode_player_apm(env, &replay.player_apm);
     let timeline = encode_timeline(env, &replay.timeline);
+    let meta = encode_metadata(env, &replay.metadata);
     let command_count = replay.commands.len();
     let map_data = replay.map_data.as_slice().encode(env);
 
@@ -220,6 +379,7 @@ fn encode_replay<'a>(env: Env<'a>, replay: &replay_core::Replay) -> Term<'a> {
             (atoms::build_order().encode(env), build_order),
             (atoms::player_apm().encode(env), player_apm),
             (atoms::timeline().encode(env), timeline),
+            (atoms::metadata().encode(env), meta),
             (
                 atoms::command_count().encode(env),
                 command_count.encode(env),
@@ -486,6 +646,196 @@ fn encode_player_state<'a>(env: Env<'a>, state: &replay_core::timeline::PlayerSt
         ],
     )
     .unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Metadata encoding
+// ---------------------------------------------------------------------------
+
+fn encode_metadata<'a>(env: Env<'a>, meta: &replay_core::metadata::GameMetadata) -> Term<'a> {
+    use replay_core::metadata::GameResult;
+
+    let matchup_term = match &meta.matchup {
+        Some(m) => Term::map_from_pairs(
+            env,
+            &[
+                (atoms::code().encode(env), m.code.as_str().encode(env)),
+                (atoms::mirror().encode(env), m.mirror.encode(env)),
+            ],
+        )
+        .unwrap(),
+        None => rustler::types::atom::nil().encode(env),
+    };
+
+    let result_term = match &meta.result {
+        GameResult::Winner {
+            player_id,
+            player_name,
+        } => Term::map_from_pairs(
+            env,
+            &[
+                (atoms::result().encode(env), atoms::winner().encode(env)),
+                (atoms::player_id().encode(env), player_id.encode(env)),
+                (
+                    atoms::player_name().encode(env),
+                    player_name.as_str().encode(env),
+                ),
+            ],
+        )
+        .unwrap(),
+        GameResult::Unknown => atoms::unknown().encode(env),
+    };
+
+    Term::map_from_pairs(
+        env,
+        &[
+            (atoms::matchup().encode(env), matchup_term),
+            (
+                atoms::map_name().encode(env),
+                meta.map_name.as_str().encode(env),
+            ),
+            (
+                atoms::map_name_raw().encode(env),
+                meta.map_name_raw.as_str().encode(env),
+            ),
+            (atoms::result().encode(env), result_term),
+            (
+                atoms::duration_secs().encode(env),
+                meta.duration_secs.encode(env),
+            ),
+            (atoms::is_1v1().encode(env), meta.is_1v1.encode(env)),
+            (
+                atoms::player_count().encode(env),
+                meta.player_count.encode(env),
+            ),
+        ],
+    )
+    .unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Phase encoding
+// ---------------------------------------------------------------------------
+
+fn encode_phase_analysis<'a>(
+    env: Env<'a>,
+    analysis: &replay_core::phases::PhaseAnalysis,
+) -> Term<'a> {
+    let phases_list: Vec<Term<'a>> = analysis
+        .phases
+        .iter()
+        .map(|p| {
+            let phase_atom = match p.phase {
+                replay_core::phases::Phase::Opening => atoms::opening().encode(env),
+                replay_core::phases::Phase::EarlyGame => atoms::early_game().encode(env),
+                replay_core::phases::Phase::MidGame => atoms::mid_game().encode(env),
+                replay_core::phases::Phase::LateGame => atoms::late_game().encode(env),
+            };
+            let end_f = p
+                .end_frame
+                .map(|f| f.encode(env))
+                .unwrap_or_else(|| rustler::types::atom::nil().encode(env));
+            let end_s = p
+                .end_seconds
+                .map(|s| s.encode(env))
+                .unwrap_or_else(|| rustler::types::atom::nil().encode(env));
+            Term::map_from_pairs(
+                env,
+                &[
+                    (atoms::phase().encode(env), phase_atom),
+                    (atoms::start_frame().encode(env), p.start_frame.encode(env)),
+                    (
+                        atoms::start_seconds().encode(env),
+                        p.start_seconds.encode(env),
+                    ),
+                    (atoms::end_frame().encode(env), end_f),
+                    (atoms::end_seconds().encode(env), end_s),
+                ],
+            )
+            .unwrap()
+        })
+        .collect();
+
+    let lm = &analysis.landmarks;
+    let nil = || rustler::types::atom::nil().encode(env);
+    let opt_u32 = |v: Option<u32>| v.map(|f| f.encode(env)).unwrap_or_else(nil);
+
+    let landmarks_map = Term::map_from_pairs(
+        env,
+        &[
+            (atoms::first_gas().encode(env), opt_u32(lm.first_gas)),
+            (atoms::first_tech().encode(env), opt_u32(lm.first_tech)),
+            (atoms::first_tier2().encode(env), opt_u32(lm.first_tier2)),
+            (atoms::first_tier3().encode(env), opt_u32(lm.first_tier3)),
+            (
+                atoms::first_expansion().encode(env),
+                opt_u32(lm.first_expansion),
+            ),
+        ],
+    )
+    .unwrap();
+
+    Term::map_from_pairs(
+        env,
+        &[
+            (atoms::phases().encode(env), phases_list.encode(env)),
+            (atoms::landmarks().encode(env), landmarks_map),
+        ],
+    )
+    .unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Skill encoding
+// ---------------------------------------------------------------------------
+
+fn encode_skill_profiles<'a>(
+    env: Env<'a>,
+    profiles: &[replay_core::skill::SkillProfile],
+) -> Term<'a> {
+    let list: Vec<Term<'a>> = profiles
+        .iter()
+        .map(|p| {
+            let tier_atom = match p.tier {
+                replay_core::skill::SkillTier::Beginner => atoms::beginner().encode(env),
+                replay_core::skill::SkillTier::Intermediate => atoms::intermediate().encode(env),
+                replay_core::skill::SkillTier::Advanced => atoms::advanced().encode(env),
+                replay_core::skill::SkillTier::Expert => atoms::expert().encode(env),
+                replay_core::skill::SkillTier::Professional => atoms::professional().encode(env),
+            };
+            let first_action = p
+                .first_action_frame
+                .map(|f| f.encode(env))
+                .unwrap_or_else(|| rustler::types::atom::nil().encode(env));
+
+            Term::map_from_pairs(
+                env,
+                &[
+                    (atoms::player_id().encode(env), p.player_id.encode(env)),
+                    (atoms::apm().encode(env), p.apm.encode(env)),
+                    (atoms::eapm().encode(env), p.eapm.encode(env)),
+                    (atoms::efficiency().encode(env), p.efficiency.encode(env)),
+                    (
+                        atoms::hotkey_assigns_per_min().encode(env),
+                        p.hotkey_assigns_per_min.encode(env),
+                    ),
+                    (
+                        atoms::hotkey_recalls_per_min().encode(env),
+                        p.hotkey_recalls_per_min.encode(env),
+                    ),
+                    (
+                        atoms::apm_consistency().encode(env),
+                        p.apm_consistency.encode(env),
+                    ),
+                    (atoms::first_action_frame().encode(env), first_action),
+                    (atoms::skill_score().encode(env), p.skill_score.encode(env)),
+                    (atoms::tier().encode(env), tier_atom),
+                ],
+            )
+            .unwrap()
+        })
+        .collect();
+    list.encode(env)
 }
 
 // ---------------------------------------------------------------------------
