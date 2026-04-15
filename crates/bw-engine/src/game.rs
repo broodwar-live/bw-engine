@@ -1119,6 +1119,59 @@ impl Game {
         }
     }
 
+    // -- Detection --
+
+    /// Check if a hidden (burrowed/cloaked) unit is detected by any enemy detector.
+    fn is_detected(&self, unit_idx: usize) -> bool {
+        let unit = match &self.units[unit_idx] {
+            Some(u) => u,
+            None => return true, // Non-existent units are "detected" (visible).
+        };
+        if !unit.burrowed && !unit.cloaked {
+            return true; // Not hidden.
+        }
+
+        let ux = unit.pixel_x;
+        let uy = unit.pixel_y;
+        let unit_owner = unit.owner;
+
+        // Check if any enemy detector is within sight range.
+        for slot in &self.units {
+            if let Some(other) = slot
+                && other.alive
+                && other.owner != unit_owner
+                && is_detector_type(other.unit_type)
+            {
+                let sight = self
+                    .data
+                    .unit_type(other.unit_type)
+                    .map(|ut| ut.sight_range as i32 * 32)
+                    .unwrap_or(0);
+                let dx = (other.pixel_x - ux) as i64;
+                let dy = (other.pixel_y - uy) as i64;
+                if dx * dx + dy * dy <= (sight as i64) * (sight as i64) {
+                    return true; // Detected by an enemy detector.
+                }
+            }
+        }
+
+        false // Hidden and not detected.
+    }
+
+    /// Check if a unit can be targeted (alive, not hidden or detected).
+    fn is_targetable(&self, unit_idx: usize) -> bool {
+        match &self.units[unit_idx] {
+            Some(u) if u.alive => {
+                if u.burrowed || u.cloaked {
+                    self.is_detected(unit_idx)
+                } else {
+                    true
+                }
+            }
+            _ => false,
+        }
+    }
+
     // -- Stim / Burrow / Cloak --
 
     fn issue_stim(&mut self, player_id: u8) {
@@ -1219,6 +1272,10 @@ impl Game {
                 if !other.alive || other.owner == unit.owner || other.owner >= 8 {
                     continue;
                 }
+                // Skip hidden (burrowed/cloaked) units.
+                if other.burrowed || other.cloaked {
+                    continue;
+                }
                 // Check if we have a weapon that can hit this target.
                 if other.is_air && !has_air {
                     continue;
@@ -1243,6 +1300,14 @@ impl Game {
         for (attacker_idx, target_tag) in attacks {
             let target_uid = UnitId::from_tag(target_tag);
             let ti = target_uid.index() as usize;
+
+            // Check if target is hidden and not detected.
+            if !self.is_targetable(ti) {
+                if let Some(Some(unit)) = self.units.get_mut(attacker_idx) {
+                    unit.attack_target = None;
+                }
+                continue;
+            }
 
             let target_info = self
                 .units
@@ -1762,6 +1827,20 @@ fn spell_effect(tech_type: u8) -> (i32, i32, bool) {
         17 => (0, 64, false),         // Ensnare: no damage (slow effect)
         _ => (0, 0, false),
     }
+}
+
+/// Whether a unit type is a detector (can see cloaked/burrowed units).
+fn is_detector_type(unit_type: u16) -> bool {
+    matches!(
+        unit_type,
+        84  // Observer
+        | 9   // Science Vessel
+        | 43  // Overlord (has innate detection in BW)
+        | 45  // Queen (with Ensnare reveals)
+        | 144 // Spore Colony
+        | 124 // Missile Turret
+        | 162 // Photon Cannon
+    )
 }
 
 fn is_worker_type(unit_type: u16) -> bool {
