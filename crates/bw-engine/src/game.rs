@@ -126,6 +126,16 @@ pub enum EngineCommand {
     },
     /// Unload all units from a transport.
     UnloadAll,
+    /// Stim Pack (Marines/Firebats): +50% speed and fire rate, costs 10 HP.
+    Stim,
+    /// Burrow selected units.
+    Burrow,
+    /// Unburrow selected units.
+    Unburrow,
+    /// Cloak selected units.
+    Cloak,
+    /// Decloak selected units.
+    Decloak,
 }
 
 /// Spatial hash grid for efficient collision detection.
@@ -312,6 +322,13 @@ impl Game {
             rally_y: y,
             cargo: Vec::new(),
             loaded_in: None,
+            irradiate_timer: 0,
+            plague_timer: 0,
+            ensnare_timer: 0,
+            stim_timer: 0,
+            burrowed: false,
+            cloaked: false,
+            base_top_speed: flingy.top_speed,
         };
         self.units[index as usize] = Some(unit);
 
@@ -397,6 +414,13 @@ impl Game {
             rally_y: y,
             cargo: Vec::new(),
             loaded_in: None,
+            irradiate_timer: 0,
+            plague_timer: 0,
+            ensnare_timer: 0,
+            stim_timer: 0,
+            burrowed: false,
+            cloaked: false,
+            base_top_speed: flingy.top_speed,
         });
     }
 
@@ -500,6 +524,21 @@ impl Game {
             EngineCommand::UnloadAll => {
                 self.issue_unload_all(player_id);
             }
+            EngineCommand::Stim => {
+                self.issue_stim(player_id);
+            }
+            EngineCommand::Burrow => {
+                self.issue_burrow(player_id, true);
+            }
+            EngineCommand::Unburrow => {
+                self.issue_burrow(player_id, false);
+            }
+            EngineCommand::Cloak => {
+                self.issue_cloak(player_id, true);
+            }
+            EngineCommand::Decloak => {
+                self.issue_cloak(player_id, false);
+            }
         }
     }
 
@@ -553,7 +592,10 @@ impl Game {
         // Phase 6: Energy — casters regenerate energy.
         self.update_energy();
 
-        // Phase 7: Shield regeneration (Protoss).
+        // Phase 7: Status effects (Irradiate, Plague, Ensnare, Stim).
+        self.update_status_effects();
+
+        // Phase 8: Shield regeneration (Protoss).
         if self.current_frame.is_multiple_of(8) {
             self.update_shield_regen();
         }
@@ -807,6 +849,7 @@ impl Game {
             unit.max_energy = max_energy_for_type(unit_type);
             unit.is_worker = is_worker_type(unit_type);
             unit.collision_radius = collision_radius_for_type(unit_type, ut.is_building);
+            unit.base_top_speed = flingy.top_speed;
         }
     }
 
@@ -825,7 +868,6 @@ impl Game {
     // -- Spell casting --
 
     fn issue_spell(&mut self, player_id: u8, tech_type: u8, x: i32, y: i32) {
-        // Deduct energy from the first selected caster.
         let energy_cost = spell_energy_cost(tech_type);
         if energy_cost == 0 {
             return;
@@ -844,15 +886,90 @@ impl Game {
 
         let Some(idx) = caster_idx else { return };
 
-        // Deduct energy.
         if let Some(Some(unit)) = self.units.get_mut(idx) {
             unit.energy -= energy_cost;
         }
 
-        // Apply spell effect.
-        let (damage, radius, affects_shields) = spell_effect(tech_type);
-        if damage > 0 && radius > 0 {
-            self.apply_area_damage(x, y, radius, damage, player_id, affects_shields);
+        match tech_type {
+            19 => {
+                // Psionic Storm: 112 damage over 48px radius.
+                self.apply_area_damage(x, y, 48, 112 * 256, player_id, true);
+            }
+            2 => {
+                // EMP: drain all shields + energy in 64px radius.
+                let radius_sq = 64i64 * 64;
+                for slot in &mut self.units {
+                    if let Some(unit) = slot
+                        && unit.alive
+                    {
+                        let dx = (unit.pixel_x - x) as i64;
+                        let dy = (unit.pixel_y - y) as i64;
+                        if dx * dx + dy * dy <= radius_sq {
+                            unit.shields = 0;
+                            unit.energy = 0;
+                        }
+                    }
+                }
+            }
+            7 => {
+                // Irradiate: apply DoT to nearest enemy unit at target location.
+                // ~250 damage over ~750 frames (37.5 seconds).
+                let radius_sq = 32i64 * 32;
+                for slot in &mut self.units {
+                    if let Some(unit) = slot
+                        && unit.alive
+                        && unit.owner != player_id
+                        && unit.irradiate_timer == 0
+                    {
+                        let dx = (unit.pixel_x - x) as i64;
+                        let dy = (unit.pixel_y - y) as i64;
+                        if dx * dx + dy * dy <= radius_sq {
+                            unit.irradiate_timer = 750;
+                            break; // Single target.
+                        }
+                    }
+                }
+            }
+            15 => {
+                // Plague: DoT in 64px radius, ~300 damage over ~600 frames. Can't kill.
+                let radius_sq = 64i64 * 64;
+                for slot in &mut self.units {
+                    if let Some(unit) = slot
+                        && unit.alive
+                        && unit.owner != player_id
+                    {
+                        let dx = (unit.pixel_x - x) as i64;
+                        let dy = (unit.pixel_y - y) as i64;
+                        if dx * dx + dy * dy <= radius_sq {
+                            unit.plague_timer = 600;
+                        }
+                    }
+                }
+            }
+            17 => {
+                // Ensnare: slow units in 64px radius for ~450 frames.
+                let radius_sq = 64i64 * 64;
+                for slot in &mut self.units {
+                    if let Some(unit) = slot
+                        && unit.alive
+                        && unit.ensnare_timer == 0
+                    {
+                        let dx = (unit.pixel_x - x) as i64;
+                        let dy = (unit.pixel_y - y) as i64;
+                        if dx * dx + dy * dy <= radius_sq {
+                            unit.ensnare_timer = 450;
+                            unit.top_speed = unit.base_top_speed / 2;
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Generic area damage for other spells.
+                let (damage, radius, affects_shields) = spell_effect(tech_type);
+                if damage > 0 && radius > 0 {
+                    self.apply_area_damage(x, y, radius, damage, player_id, affects_shields);
+                }
+            }
         }
     }
 
@@ -1002,6 +1119,57 @@ impl Game {
         }
     }
 
+    // -- Stim / Burrow / Cloak --
+
+    fn issue_stim(&mut self, player_id: u8) {
+        let tags: Vec<u16> = self.selection.selected_tags(player_id).to_vec();
+        for tag in &tags {
+            let uid = UnitId::from_tag(*tag);
+            if let Some(Some(unit)) = self.units.get_mut(uid.index() as usize)
+                && unit.alive
+                && matches!(unit.unit_type, 0 | 32) // Marine (0) or Firebat (32)
+                && unit.stim_timer == 0
+                && unit.hp > 10 * 256
+            {
+                unit.hp -= 10 * 256; // Costs 10 HP.
+                unit.stim_timer = 270; // ~11 seconds at fastest.
+                unit.top_speed = unit.base_top_speed * 3 / 2; // +50% speed.
+                // Fire rate boost is handled in update_combat via cooldown reduction.
+            }
+        }
+    }
+
+    fn issue_burrow(&mut self, player_id: u8, burrow: bool) {
+        let tags: Vec<u16> = self.selection.selected_tags(player_id).to_vec();
+        for tag in &tags {
+            let uid = UnitId::from_tag(*tag);
+            if let Some(Some(unit)) = self.units.get_mut(uid.index() as usize)
+                && unit.alive
+                && !unit.is_building
+                && !unit.is_air
+            {
+                unit.burrowed = burrow;
+                if burrow {
+                    unit.move_state = MoveState::AtRest;
+                    unit.velocity = crate::fp8::XY::ZERO;
+                    unit.current_speed = crate::fp8::Fp8::ZERO;
+                }
+            }
+        }
+    }
+
+    fn issue_cloak(&mut self, player_id: u8, cloak: bool) {
+        let tags: Vec<u16> = self.selection.selected_tags(player_id).to_vec();
+        for tag in &tags {
+            let uid = UnitId::from_tag(*tag);
+            if let Some(Some(unit)) = self.units.get_mut(uid.index() as usize)
+                && unit.alive
+            {
+                unit.cloaked = cloak;
+            }
+        }
+    }
+
     // -- Simulation phases --
 
     fn update_combat(&mut self) {
@@ -1134,7 +1302,8 @@ impl Game {
 
                 if height_miss {
                     if let Some(Some(unit)) = self.units.get_mut(attacker_idx) {
-                        unit.weapon_cooldown = weapon_copy.cooldown as u16;
+                        let cd = weapon_copy.cooldown as u16;
+                        unit.weapon_cooldown = if unit.stim_timer > 0 { cd / 2 } else { cd };
                     }
                 } else {
                     let upgrade_bonus = weapon_copy.damage_bonus as i32
@@ -1227,7 +1396,8 @@ impl Game {
                     }
 
                     if let Some(Some(unit)) = self.units.get_mut(attacker_idx) {
-                        unit.weapon_cooldown = weapon_copy.cooldown as u16;
+                        let cd = weapon_copy.cooldown as u16;
+                        unit.weapon_cooldown = if unit.stim_timer > 0 { cd / 2 } else { cd };
                     }
                 }
             } else if dist_sq > range_sq {
@@ -1397,6 +1567,54 @@ impl Game {
                 && unit.energy < unit.max_energy
             {
                 unit.energy = (unit.energy + 8).min(unit.max_energy);
+            }
+        }
+    }
+
+    // -- Status effects --
+
+    fn update_status_effects(&mut self) {
+        for slot in &mut self.units {
+            let Some(unit) = slot else { continue };
+            if !unit.alive {
+                continue;
+            }
+
+            // Irradiate: ~0.33 damage per frame (250 / 750 = 0.33).
+            if unit.irradiate_timer > 0 {
+                unit.irradiate_timer -= 1;
+                let dmg = 85; // ~0.33 * 256 fp8
+                unit.hp -= dmg;
+                if unit.hp <= 0 {
+                    unit.alive = false;
+                }
+            }
+
+            // Plague: ~0.5 damage per frame (300 / 600 = 0.5). Can't kill — floor at 1 HP.
+            if unit.plague_timer > 0 {
+                unit.plague_timer -= 1;
+                let dmg = 128; // ~0.5 * 256 fp8
+                if unit.hp > 256 {
+                    // Don't let plague kill — minimum 1 HP (256 fp8).
+                    unit.hp = (unit.hp - dmg).max(256);
+                }
+            }
+
+            // Ensnare: decrement timer, restore speed when expired.
+            if unit.ensnare_timer > 0 {
+                unit.ensnare_timer -= 1;
+                if unit.ensnare_timer == 0 {
+                    unit.top_speed = unit.base_top_speed;
+                }
+            }
+
+            // Stim: decrement timer, restore speed when expired.
+            // While active, weapon cooldown is halved (handled in combat via cooldown reset).
+            if unit.stim_timer > 0 {
+                unit.stim_timer -= 1;
+                if unit.stim_timer == 0 {
+                    unit.top_speed = unit.base_top_speed;
+                }
             }
         }
     }

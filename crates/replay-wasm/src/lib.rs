@@ -306,6 +306,11 @@ fn translate_command(cmd: &replay_core::command::Command) -> Option<bw_engine::E
         Command::Upgrade { upgrade_type } => Some(bw_engine::EngineCommand::Upgrade {
             upgrade_type: *upgrade_type,
         }),
+        Command::Stim => Some(bw_engine::EngineCommand::Stim),
+        Command::Burrow { .. } => Some(bw_engine::EngineCommand::Burrow),
+        Command::Unburrow { .. } => Some(bw_engine::EngineCommand::Unburrow),
+        Command::Cloak { .. } => Some(bw_engine::EngineCommand::Cloak),
+        Command::Decloak { .. } => Some(bw_engine::EngineCommand::Decloak),
         _ => None,
     }
 }

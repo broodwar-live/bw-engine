@@ -117,6 +117,15 @@ pub struct UnitState {
     // Transport cargo
     pub cargo: Vec<u16>,        // tags of loaded units
     pub loaded_in: Option<u16>, // tag of transport carrying this unit
+
+    // Status effects (frames remaining, 0 = inactive)
+    pub irradiate_timer: u16, // deals damage to nearby friendly units
+    pub plague_timer: u16,    // deals damage over time (can't kill)
+    pub ensnare_timer: u16,   // slows movement speed
+    pub stim_timer: u16,      // boosts speed and fire rate
+    pub burrowed: bool,
+    pub cloaked: bool,
+    pub base_top_speed: i32, // saved for ensnare/stim restoration
 }
 
 impl UnitState {
@@ -270,6 +279,13 @@ mod tests {
             rally_y: 0,
             cargo: Vec::new(),
             loaded_in: None,
+            irradiate_timer: 0,
+            plague_timer: 0,
+            ensnare_timer: 0,
+            stim_timer: 0,
+            burrowed: false,
+            cloaked: false,
+            base_top_speed: 4 * 256,
         }
     }
 
