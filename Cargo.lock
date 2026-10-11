@@ -713,6 +713,7 @@ name = "replay-wasm"
 version = "0.1.0"
 dependencies = [
  "bw-engine",
+ "js-sys",
  "replay-core",
  "serde",
  "serde-wasm-bindgen",

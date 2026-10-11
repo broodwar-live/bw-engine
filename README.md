@@ -16,7 +16,7 @@
     <img alt="Rust" src="https://img.shields.io/badge/Rust-1.85+-000000?logo=rust&logoColor=white&style=for-the-badge">
   </a>
   <a href="https://webassembly.org/">
-    <img alt="WASM" src="https://img.shields.io/badge/WebAssembly-293KB_parser-654ff0?logo=webassembly&logoColor=white&style=for-the-badge">
+    <img alt="WASM" src="https://img.shields.io/badge/WebAssembly-362KB_parser-654ff0?logo=webassembly&logoColor=white&style=for-the-badge">
   </a>
   <a href="LICENSE">
     <img alt="License" src="https://img.shields.io/badge/License-MIT-c6a0f6?style=for-the-badge">
@@ -65,10 +65,10 @@ for entry in replay.build_order.iter().take(5) {
 ### Browser
 
 ```sh
-# Full build (parser + map/asset bindings + experimental simulation), ~386 KB
+# Full build (parser + map/asset bindings + experimental simulation), ~455 KB
 wasm-pack build crates/replay-wasm --target web --out-dir ../../pkg
 
-# Parser-only build (just parseReplay), ~293 KB
+# Parser-only build (parseReplay with openings, phases, APM curve), ~362 KB
 wasm-pack build crates/replay-wasm --target web --out-dir ../../pkg -- --no-default-features
 
 python3 -m http.server 8000
