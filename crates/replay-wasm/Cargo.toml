@@ -11,7 +11,17 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 replay-core = { path = "../replay-core" }
-bw-engine = { path = "../bw-engine" }
+bw-engine = { path = "../bw-engine", default-features = false, optional = true }
 wasm-bindgen.workspace = true
 serde.workspace = true
 serde-wasm-bindgen.workspace = true
+
+[features]
+# Default build keeps the full map/asset + simulation API for existing users.
+# For a parser-only bundle (just `parseReplay`), build with
+# `--no-default-features`.
+default = ["sim"]
+# Map, MPQ, CHK/SCX, TBL, GRP and tileset bindings.
+map = ["dep:bw-engine"]
+# Experimental game simulation (`GameSim`). Implies `map`.
+sim = ["map", "bw-engine/sim"]
