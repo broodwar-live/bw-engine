@@ -14,7 +14,7 @@ pub struct BuildOrderEntry {
 }
 
 /// The type of build order action.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum BuildAction {
     /// Build a structure (unit_type).
     Build(u16),
@@ -100,7 +100,9 @@ pub fn extract_build_order(commands: &[GameCommand]) -> Vec<BuildOrderEntry> {
 /// The build order together with how many units the issuing player had
 /// selected for each order (at least 1). One Zerg morph order applies to every
 /// selected larva, so this is needed to count multi-larva morphs.
-pub(crate) fn build_orders_with_selection(commands: &[GameCommand]) -> Vec<(BuildOrderEntry, u16)> {
+pub(crate) fn build_orders_with_selection(
+    commands: &[GameCommand],
+) -> Vec<(BuildOrderEntry, Selection)> {
     let mut selections = SelectionTracker::default();
     // (player, building type) -> frame of the last kept Build order.
     let mut last_build: Vec<(u8, u16, u32)> = Vec::new();
@@ -145,6 +147,16 @@ pub(crate) fn build_orders_with_selection(commands: &[GameCommand]) -> Vec<(Buil
     out
 }
 
+/// The issuing player's selection when an order was given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Selection {
+    /// Number of selected units (at least 1).
+    pub count: u16,
+    /// Changes whenever the player's selection changes, so two orders with
+    /// the same generation were given to the same units.
+    pub generation: u32,
+}
+
 /// Follows each player's current selection through select and hotkey
 /// commands. Only the number of selected units matters here.
 #[derive(Default)]
@@ -155,6 +167,7 @@ struct SelectionTracker {
 #[derive(Default)]
 struct PlayerSelection {
     current: Vec<u16>,
+    generation: u32,
     groups: [Vec<u16>; 10],
 }
 
@@ -172,6 +185,18 @@ impl SelectionTracker {
 
     fn observe(&mut self, c: &GameCommand) {
         let sel = self.player(c.player_id);
+        if matches!(
+            c.command,
+            Command::Select { .. }
+                | Command::SelectAdd { .. }
+                | Command::SelectRemove { .. }
+                | Command::Hotkey {
+                    action: HotkeyAction::Select,
+                    ..
+                }
+        ) {
+            sel.generation += 1;
+        }
         match &c.command {
             Command::Select { unit_tags } => sel.current = unit_tags.clone(),
             Command::SelectAdd { unit_tags } => {
@@ -199,8 +224,12 @@ impl SelectionTracker {
         }
     }
 
-    fn selected(&mut self, id: u8) -> u16 {
-        (self.player(id).current.len() as u16).max(1)
+    fn selected(&mut self, id: u8) -> Selection {
+        let sel = self.player(id);
+        Selection {
+            count: (sel.current.len() as u16).max(1),
+            generation: sel.generation,
+        }
     }
 }
 
@@ -424,11 +453,11 @@ mod tests {
             make_cmd(9, 0, Command::UnitMorph { unit_type: 41 }),
             make_cmd(10, 1, Command::Train { unit_type: 64 }),
         ];
-        let sel: Vec<u16> = build_orders_with_selection(&commands)
+        let sel: Vec<(u16, u32)> = build_orders_with_selection(&commands)
             .iter()
-            .map(|(_, n)| *n)
+            .map(|(_, s)| (s.count, s.generation))
             .collect();
-        assert_eq!(sel, vec![3, 2, 4, 1]);
+        assert_eq!(sel, vec![(3, 1), (2, 2), (4, 5), (1, 0)]);
     }
 
     #[test]

@@ -9,6 +9,7 @@ pub mod header;
 pub mod identity;
 pub mod metadata;
 pub mod phases;
+pub mod production;
 pub mod section;
 pub mod similarity;
 pub mod skill;
@@ -22,6 +23,7 @@ use error::{ReplayError, Result};
 use format::Format;
 use header::Header;
 use metadata::GameMetadata;
+use production::ProductionEntry;
 use timeline::TimelineSnapshot;
 
 /// A fully parsed replay.
@@ -33,6 +35,11 @@ pub struct Replay {
     /// truncated commands). Empty/zero for a cleanly parsed replay.
     pub command_warnings: CommandParseWarnings,
     pub build_order: Vec<BuildOrderEntry>,
+    /// The build order annotated by the production model: supply count at
+    /// each order, larvae per morph, and orders that could not have been
+    /// carried out (queue full, no larva, duplicates). One entry per
+    /// `build_order` entry.
+    pub production: Vec<ProductionEntry>,
     pub player_apm: Vec<PlayerApm>,
     pub timeline: Vec<TimelineSnapshot>,
     /// High-level game metadata: matchup, normalized map name, winner.
@@ -122,9 +129,10 @@ pub fn parse(data: &[u8]) -> Result<Replay> {
     let build_order = analysis::extract_build_order(&commands);
     let player_apm = analysis::calculate_apm(&commands, hdr.frame_count);
 
-    // Build timeline from player IDs in the header.
-    let player_ids: Vec<u8> = hdr.players.iter().map(|p| p.player_id).collect();
-    let tl = timeline::build_timeline(&build_order, &player_ids);
+    // Production model (supply, larvae, queues) and the timeline built on it.
+    let players = modelled_players(&hdr);
+    let model = production::model_production(&commands, &players);
+    let tl = timeline::build_timeline(&model, &players);
 
     // Derive game metadata.
     let meta = metadata::extract_metadata(&hdr, &commands);
@@ -134,12 +142,25 @@ pub fn parse(data: &[u8]) -> Result<Replay> {
         commands,
         command_warnings,
         build_order,
+        production: model.entries,
         player_apm,
         timeline: tl,
         metadata: meta,
         extra_sections,
         map_data,
     })
+}
+
+/// Players to model: human/computer players that issue commands, with their
+/// race. Computer players share player id 255, so they are skipped.
+fn modelled_players(hdr: &Header) -> Vec<(u8, header::Race)> {
+    let mut out: Vec<(u8, header::Race)> = Vec::new();
+    for p in &hdr.players {
+        if p.player_id != 255 && !out.iter().any(|(id, _)| *id == p.player_id) {
+            out.push((p.player_id, p.race));
+        }
+    }
+    out
 }
 
 /// Skip a section (typically a 4-byte size-marker between real sections).

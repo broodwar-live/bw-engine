@@ -371,6 +371,7 @@ mod tests {
             commands: vec![],
             command_warnings: Default::default(),
             build_order: vec![],
+            production: vec![],
             player_apm: vec![],
             timeline: vec![],
             metadata: meta,
