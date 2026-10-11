@@ -6,9 +6,9 @@ use crate::format::Format;
 
 /// Reads a little-endian i32 from a byte slice at the given offset.
 fn read_i32(data: &[u8], offset: usize) -> Result<i32> {
-    let too_short = || ReplayError::TooShort {
-        expected: offset.saturating_add(4),
-        actual: data.len(),
+    let too_short = || ReplayError::Truncated {
+        offset,
+        len: data.len(),
     };
     let bytes: [u8; 4] = offset
         .checked_add(4)
@@ -50,9 +50,9 @@ pub fn decompress_section(data: &[u8], offset: usize, fmt: Format) -> Result<(Ve
         cursor += 4;
 
         let end = cursor.saturating_add(compressed_len);
-        let chunk_data = data.get(cursor..end).ok_or(ReplayError::TooShort {
-            expected: end,
-            actual: data.len(),
+        let chunk_data = data.get(cursor..end).ok_or(ReplayError::Truncated {
+            offset: cursor,
+            len: data.len(),
         })?;
 
         decompress_chunk(chunk_data, fmt, &mut decompressed)?;

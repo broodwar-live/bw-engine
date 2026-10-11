@@ -2,9 +2,20 @@
 
 ## JavaScript API (via WASM)
 
-### `parseReplay(data: Uint8Array) -> Object`
+### `parseReplay(data: Uint8Array, options?: Object) -> Object`
 
-Parse a `.rep` file. Returns:
+Parse a `.rep` file and run replay-core's analyses on it. Options (all
+optional):
+
+| Option | Default | Effect |
+|---|---|---|
+| `mapData` | `false` | Include `map_data` (raw CHK bytes, `Uint8Array`) |
+| `commands` | `true` | Include the full `commands` stream |
+| `timeline` | `true` | Include the per-order `timeline` snapshots |
+| `apmWindowSecs` | `60` | APM curve sliding window, real seconds |
+| `apmStepSecs` | `10` | APM curve sample interval, real seconds |
+
+Returns:
 
 ```js
 {
@@ -17,17 +28,36 @@ Parse a `.rep` file. Returns:
     game_speed: "Fastest",
     game_type: "Melee",
     players: [
-      { name: "Flash", race: "Terran", player_id: 0, color: 111, ... },
-      { name: "Jaedong", race: "Zerg", player_id: 1, color: 117, ... }
+      // color: palette index (CCLR colour wins on Remastered), custom_color: 0xRRGGBB or null
+      { name: "Flash", race: "Terran", player_id: 0, color: 0, custom_color: null, ... },
+      { name: "Jaedong", race: "Zerg", player_id: 1, color: 1, custom_color: null, ... }
     ]
   },
   commands: [ { frame: 100, player_id: 0, command: { Select: { unit_tags: [0, 1] } } }, ... ],
   build_order: [ { frame: 500, player_id: 0, action: { Train: 7 }, real_seconds: 21.0 }, ... ],
+  // Build order annotated by the production model (one entry per build_order entry):
+  // supply when ordered, larvae per morph, and orders that could not have happened.
+  production: [ { frame, real_seconds, player_id, action, supply: 9, supply_max: 9,
+                  count: 1, start_frame: 500, dropped: false, drop_reason: null }, ... ],
   player_apm: [ { player_id: 0, apm: 312.5, eapm: 280.1 }, ... ],
+  apm_curve: [ { frame: 238, real_seconds: 10, player_id: 0, apm: 250, eapm: 200 }, ... ],
+  openings: [ { player_id: 1, name: "12 Pool → Lair", tag: "12pool", follow_up: "lair",
+                confidence: 0.75, race: "Z", actions_analyzed: 9 }, ... ],
+  phases: { phases: [ { phase: "Opening", start_frame: 0, end_frame: 2100, ... } ], landmarks: { ... } },
   timeline: [ { frame: 0, players: [...] }, ... ],
-  map_data: Uint8Array  // raw CHK bytes
+  metadata: { matchup: { code: "TvZ", mirror: false }, map_name: "Fighting Spirit",
+              map_name_raw: "| iCCup | Fighting Spirit 1.3", result: ..., ... },
+  extra_sections: { tags: ["SKIN", "CCLR", ...], player_colors: [...], truncated: false },
+  map_data: Uint8Array  // only with { mapData: true }
 }
 ```
+
+Throws an `Error` (name `ReplayError`) with a readable `message` and a
+stable `code`: `NOT_A_REPLAY`, `TRUNCATED`, `CORRUPT` or `UNSUPPORTED`.
+
+### `getMapData(data: Uint8Array) -> Uint8Array`
+
+Only the raw CHK map data of a replay (for `GameMap` / `GameSim`).
 
 ### `GameMap`
 
@@ -101,13 +131,17 @@ replay.commands[0].player_id     // u8
 replay.commands[0].command       // Command enum
 
 // Analytics
-replay.build_order               // Vec<BuildOrderEntry>
+replay.build_order               // Vec<BuildOrderEntry> (Build retries within ~1 s removed)
+replay.production                // Vec<ProductionEntry> — supply, larvae, dropped orders
 replay.player_apm                // Vec<PlayerApm>
 replay.apm_over_time(60.0, 10.0) // Vec<ApmSample>
+replay.openings()                // Vec<OpeningClassification>
+replay.phases()                  // PhaseAnalysis
 
 // Game metadata (auto-detected)
 replay.metadata.matchup          // Option<Matchup> — e.g., { code: "TvZ", mirror: false }
 replay.metadata.map_name         // String — normalized ("Fighting Spirit")
+replay.metadata.map_name_raw     // String — as in the header ("| iCCup | Fighting Spirit 1.3")
 replay.metadata.result           // GameResult::Winner { player_id, player_name } or Unknown
 replay.metadata.is_1v1           // bool
 replay.metadata.duration_secs    // f64

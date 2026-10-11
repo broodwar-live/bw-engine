@@ -72,7 +72,7 @@ fn bench_classify(c: &mut Criterion) {
         .collect();
     c.bench_function("classify_all", |b| {
         b.iter(|| {
-            replay_core::classify::classify_all(black_box(&replay.build_order), black_box(&players))
+            replay_core::classify::classify_all(black_box(&replay.production), black_box(&players))
         })
     });
 }

@@ -1,4 +1,4 @@
-use crate::command::{Command, GameCommand};
+use crate::command::{Command, GameCommand, HotkeyAction};
 use crate::gamedata;
 
 /// Frames per second at "Fastest" game speed.
@@ -14,7 +14,7 @@ pub struct BuildOrderEntry {
 }
 
 /// The type of build order action.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum BuildAction {
     /// Build a structure (unit_type).
     Build(u16),
@@ -79,30 +79,158 @@ pub struct ApmSample {
     pub eapm: f64,
 }
 
+/// Repeated `Build` orders for the same structure type by the same player
+/// within this many frames (about one real second) are UI double-clicks or
+/// placement retries; only the first is kept.
+pub const BUILD_RETRY_FRAMES: u32 = 24;
+
 /// Extract the build order from the command stream.
+///
+/// Duplicate `Build` orders (see [`BUILD_RETRY_FRAMES`]) are dropped; every
+/// other production order is kept as issued. Whether an order could actually
+/// be carried out (queue space, larvae, supply) is estimated separately by
+/// [`crate::production`].
 pub fn extract_build_order(commands: &[GameCommand]) -> Vec<BuildOrderEntry> {
-    commands
-        .iter()
-        .filter(|c| c.command.is_build_order_action())
-        .map(|c| {
-            let action = match &c.command {
-                Command::Build { unit_type, .. } => BuildAction::Build(*unit_type),
-                Command::Train { unit_type } => BuildAction::Train(*unit_type),
-                Command::UnitMorph { unit_type } => BuildAction::UnitMorph(*unit_type),
-                Command::BuildingMorph { unit_type } => BuildAction::BuildingMorph(*unit_type),
-                Command::Research { tech_type } => BuildAction::Research(*tech_type),
-                Command::Upgrade { upgrade_type } => BuildAction::Upgrade(*upgrade_type),
-                Command::TrainFighter => BuildAction::TrainFighter,
-                _ => unreachable!("is_build_order_action was true"),
-            };
+    build_orders_with_selection(commands)
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect()
+}
+
+/// The build order together with how many units the issuing player had
+/// selected for each order (at least 1). One Zerg morph order applies to every
+/// selected larva, so this is needed to count multi-larva morphs.
+pub(crate) fn build_orders_with_selection(
+    commands: &[GameCommand],
+) -> Vec<(BuildOrderEntry, Selection)> {
+    let mut selections = SelectionTracker::default();
+    // (player, building type) -> frame of the last kept Build order.
+    let mut last_build: Vec<(u8, u16, u32)> = Vec::new();
+    let mut out = Vec::new();
+
+    for c in commands {
+        selections.observe(c);
+        let action = match &c.command {
+            Command::Build { unit_type, .. } => BuildAction::Build(*unit_type),
+            Command::Train { unit_type } => BuildAction::Train(*unit_type),
+            Command::UnitMorph { unit_type } => BuildAction::UnitMorph(*unit_type),
+            Command::BuildingMorph { unit_type } => BuildAction::BuildingMorph(*unit_type),
+            Command::Research { tech_type } => BuildAction::Research(*tech_type),
+            Command::Upgrade { upgrade_type } => BuildAction::Upgrade(*upgrade_type),
+            Command::TrainFighter => BuildAction::TrainFighter,
+            _ => continue,
+        };
+
+        if let BuildAction::Build(unit_type) = action {
+            let key = last_build
+                .iter_mut()
+                .find(|(p, t, _)| *p == c.player_id && *t == unit_type);
+            match key {
+                Some((_, _, frame)) if c.frame.saturating_sub(*frame) <= BUILD_RETRY_FRAMES => {
+                    continue;
+                }
+                Some((_, _, frame)) => *frame = c.frame,
+                None => last_build.push((c.player_id, unit_type, c.frame)),
+            }
+        }
+
+        out.push((
             BuildOrderEntry {
                 frame: c.frame,
                 real_seconds: frame_to_seconds(c.frame),
                 player_id: c.player_id,
                 action,
+            },
+            selections.selected(c.player_id),
+        ));
+    }
+    out
+}
+
+/// The issuing player's selection when an order was given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Selection {
+    /// Number of selected units (at least 1).
+    pub count: u16,
+    /// Changes whenever the player's selection changes, so two orders with
+    /// the same generation were given to the same units.
+    pub generation: u32,
+}
+
+/// Follows each player's current selection through select and hotkey
+/// commands. Only the number of selected units matters here.
+#[derive(Default)]
+struct SelectionTracker {
+    players: Vec<(u8, PlayerSelection)>,
+}
+
+#[derive(Default)]
+struct PlayerSelection {
+    current: Vec<u16>,
+    generation: u32,
+    groups: [Vec<u16>; 10],
+}
+
+impl SelectionTracker {
+    fn player(&mut self, id: u8) -> &mut PlayerSelection {
+        let idx = match self.players.iter().position(|(p, _)| *p == id) {
+            Some(i) => i,
+            None => {
+                self.players.push((id, PlayerSelection::default()));
+                self.players.len() - 1
             }
-        })
-        .collect()
+        };
+        &mut self.players[idx].1
+    }
+
+    fn observe(&mut self, c: &GameCommand) {
+        let sel = self.player(c.player_id);
+        if matches!(
+            c.command,
+            Command::Select { .. }
+                | Command::SelectAdd { .. }
+                | Command::SelectRemove { .. }
+                | Command::Hotkey {
+                    action: HotkeyAction::Select,
+                    ..
+                }
+        ) {
+            sel.generation += 1;
+        }
+        match &c.command {
+            Command::Select { unit_tags } => sel.current = unit_tags.clone(),
+            Command::SelectAdd { unit_tags } => {
+                for t in unit_tags {
+                    if !sel.current.contains(t) {
+                        sel.current.push(*t);
+                    }
+                }
+            }
+            Command::SelectRemove { unit_tags } => sel.current.retain(|t| !unit_tags.contains(t)),
+            Command::Hotkey { action, group } => {
+                let Some(slot) = sel.groups.get_mut(*group as usize) else {
+                    return;
+                };
+                match action {
+                    HotkeyAction::Assign => *slot = sel.current.clone(),
+                    HotkeyAction::Select => {
+                        if !slot.is_empty() {
+                            sel.current = slot.clone();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn selected(&mut self, id: u8) -> Selection {
+        let sel = self.player(id);
+        Selection {
+            count: (sel.current.len() as u16).max(1),
+            generation: sel.generation,
+        }
+    }
 }
 
 /// Calculate overall APM and EAPM for each player.
@@ -141,6 +269,11 @@ pub fn calculate_apm(commands: &[GameCommand], total_frames: u32) -> Vec<PlayerA
 /// Calculate APM over time in sliding windows for graphing.
 /// `window_frames` controls the window size (e.g., 60 seconds = ~1428 frames).
 /// `step_frames` controls how often to sample (e.g., every 10 seconds = ~238 frames).
+///
+/// Samples are taken at `step, 2*step, ...` up to `total_frames`. Each sample
+/// counts actions in `[frame - window, frame)`; near the start of the game
+/// the window is shorter and the rate is computed over its actual length, so
+/// the curve does not ramp up artificially during the first minute.
 pub fn calculate_apm_over_time(
     commands: &[GameCommand],
     total_frames: u32,
@@ -155,40 +288,42 @@ pub fn calculate_apm_over_time(
     player_ids.sort_unstable();
     player_ids.dedup();
 
-    let window_minutes = frame_to_seconds(window_frames) / 60.0;
-    let mut samples = Vec::new();
+    // Sorted action frames per player, so each window is two binary searches.
+    let frames: Vec<(u8, Vec<u32>, Vec<u32>)> = player_ids
+        .iter()
+        .map(|&pid| {
+            let mut meaningful = Vec::new();
+            let mut effective = Vec::new();
+            for c in commands.iter().filter(|c| c.player_id == pid) {
+                if c.command.is_meaningful_action() {
+                    meaningful.push(c.frame);
+                }
+                if c.command.is_effective_action() {
+                    effective.push(c.frame);
+                }
+            }
+            meaningful.sort_unstable();
+            effective.sort_unstable();
+            (pid, meaningful, effective)
+        })
+        .collect();
+    let count_in = |sorted: &[u32], from: u32, to: u32| {
+        sorted.partition_point(|&f| f < to) - sorted.partition_point(|&f| f < from)
+    };
 
-    let mut frame = 0;
+    let mut samples = Vec::new();
+    let mut frame = step_frames;
     while frame <= total_frames {
         let window_start = frame.saturating_sub(window_frames);
-        let window_end = frame;
+        let minutes = frame_to_seconds(frame - window_start) / 60.0;
 
-        for &pid in &player_ids {
-            let meaningful = commands
-                .iter()
-                .filter(|c| {
-                    c.player_id == pid
-                        && c.frame >= window_start
-                        && c.frame < window_end
-                        && c.command.is_meaningful_action()
-                })
-                .count();
-            let effective = commands
-                .iter()
-                .filter(|c| {
-                    c.player_id == pid
-                        && c.frame >= window_start
-                        && c.frame < window_end
-                        && c.command.is_effective_action()
-                })
-                .count();
-
+        for (pid, meaningful, effective) in &frames {
             samples.push(ApmSample {
                 frame,
                 real_seconds: frame_to_seconds(frame),
-                player_id: pid,
-                apm: meaningful as f64 / window_minutes,
-                eapm: effective as f64 / window_minutes,
+                player_id: *pid,
+                apm: count_in(meaningful, window_start, frame) as f64 / minutes,
+                eapm: count_in(effective, window_start, frame) as f64 / minutes,
             });
         }
 
@@ -206,7 +341,8 @@ pub fn frame_to_seconds(frame: u32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{Command, GameCommand, HotkeyAction};
+    use crate::command::HotkeyAction;
+    use crate::command::{Command, GameCommand};
 
     fn make_cmd(frame: u32, player_id: u8, command: Command) -> GameCommand {
         GameCommand {
@@ -242,6 +378,115 @@ mod tests {
         assert!(matches!(bo[1].action, BuildAction::Train(0x25)));
         assert!(matches!(bo[2].action, BuildAction::Research(5)));
         assert_eq!(bo[2].player_id, 1);
+    }
+
+    fn build(frame: u32, player_id: u8, unit_type: u16, x: u16) -> GameCommand {
+        make_cmd(
+            frame,
+            player_id,
+            Command::Build {
+                order: 0x1E,
+                x,
+                y: 10,
+                unit_type,
+            },
+        )
+    }
+
+    #[test]
+    fn test_extract_build_order_dedupes_build_retries_keeps_first() {
+        let commands = vec![
+            build(1000, 0, 156, 10), // Pylon
+            build(1004, 0, 156, 10), // double click
+            build(1020, 0, 156, 14), // placement retry elsewhere, < 1 s
+            build(1010, 1, 156, 10), // other player: kept
+            build(1030, 0, 160, 20), // Gateway: other type, kept
+            build(1300, 0, 156, 30), // second Pylon much later: kept
+        ];
+        let bo = extract_build_order(&commands);
+        let got: Vec<(u32, u8)> = bo.iter().map(|e| (e.frame, e.player_id)).collect();
+        assert_eq!(got, vec![(1000, 0), (1010, 1), (1030, 0), (1300, 0)]);
+    }
+
+    #[test]
+    fn test_extract_build_order_retry_window_is_about_one_second() {
+        let commands = vec![
+            build(1000, 0, 156, 10),
+            build(1000 + BUILD_RETRY_FRAMES, 0, 156, 10),
+            build(1000 + 2 * BUILD_RETRY_FRAMES + 1, 0, 156, 10),
+        ];
+        let bo = extract_build_order(&commands);
+        assert_eq!(bo.len(), 2);
+        assert_eq!(bo[1].frame, 1000 + 2 * BUILD_RETRY_FRAMES + 1);
+    }
+
+    #[test]
+    fn test_build_orders_with_selection_tracks_select_and_hotkeys() {
+        let commands = vec![
+            make_cmd(
+                1,
+                0,
+                Command::Select {
+                    unit_tags: vec![1, 2, 3],
+                },
+            ),
+            make_cmd(2, 0, Command::UnitMorph { unit_type: 41 }),
+            make_cmd(
+                3,
+                0,
+                Command::Hotkey {
+                    action: HotkeyAction::Assign,
+                    group: 4,
+                },
+            ),
+            make_cmd(4, 0, Command::SelectRemove { unit_tags: vec![2] }),
+            make_cmd(5, 0, Command::UnitMorph { unit_type: 41 }),
+            make_cmd(6, 0, Command::Select { unit_tags: vec![9] }),
+            make_cmd(
+                7,
+                0,
+                Command::Hotkey {
+                    action: HotkeyAction::Select,
+                    group: 4,
+                },
+            ),
+            make_cmd(
+                8,
+                0,
+                Command::SelectAdd {
+                    unit_tags: vec![7, 1],
+                },
+            ),
+            make_cmd(9, 0, Command::UnitMorph { unit_type: 41 }),
+            make_cmd(10, 1, Command::Train { unit_type: 64 }),
+        ];
+        let sel: Vec<(u16, u32)> = build_orders_with_selection(&commands)
+            .iter()
+            .map(|(_, s)| (s.count, s.generation))
+            .collect();
+        assert_eq!(sel, vec![(3, 1), (2, 2), (4, 5), (1, 0)]);
+    }
+
+    #[test]
+    fn test_extract_build_order_dedupes_on_fixture() {
+        // larva_vs_mini: Moo.Sapa clicked the Cybernetics Core three times
+        // within a second (3:24-3:25); only the first order is kept.
+        let path = format!(
+            "{}/../../tests/fixtures/larva_vs_mini.rep",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let replay = crate::parse(&std::fs::read(path).unwrap()).unwrap();
+        let cores: Vec<u32> = replay
+            .build_order
+            .iter()
+            .filter(|e| e.player_id == 1 && matches!(e.action, BuildAction::Build(164)))
+            .map(|e| e.frame)
+            .collect();
+        assert!(!cores.is_empty());
+        for w in cores.windows(2) {
+            assert!(w[1] - w[0] > BUILD_RETRY_FRAMES, "{cores:?}");
+        }
+        assert!(cores[0] < 5000, "first core kept: {cores:?}");
     }
 
     #[test]
@@ -320,6 +565,31 @@ mod tests {
         let commands = vec![make_cmd(0, 0, Command::Train { unit_type: 1 })];
         let apms = calculate_apm(&commands, 0);
         assert!(apms.is_empty());
+    }
+
+    #[test]
+    fn test_apm_over_time_partial_window_uses_actual_length() {
+        let fpm = (FPS_FASTEST * 60.0) as u32; // ~1428 frames per minute
+        // One action every 24 frames (~60 APM) for two minutes.
+        let commands: Vec<GameCommand> = (0..2 * fpm / 24)
+            .map(|i| make_cmd(i * 24, 0, Command::Train { unit_type: 7 }))
+            .collect();
+        let samples = calculate_apm_over_time(&commands, 2 * fpm, fpm, fpm / 4);
+        assert_eq!(samples.len(), 8);
+        assert_eq!(samples[0].frame, fpm / 4);
+        // The first sample covers only 15 s but must still read ~60 APM.
+        for s in &samples {
+            assert!((s.apm - 59.5).abs() < 3.0, "{} at frame {}", s.apm, s.frame);
+            assert!((s.eapm - s.apm).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn test_apm_over_time_zero_inputs_empty() {
+        let commands = vec![make_cmd(10, 0, Command::Train { unit_type: 7 })];
+        assert!(calculate_apm_over_time(&commands, 0, 10, 10).is_empty());
+        assert!(calculate_apm_over_time(&commands, 100, 0, 10).is_empty());
+        assert!(calculate_apm_over_time(&commands, 100, 10, 0).is_empty());
     }
 
     #[test]

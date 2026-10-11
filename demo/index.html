@@ -154,7 +154,7 @@ function tryBuildSim() {
     return;
   }
 
-  const chkData = new Uint8Array(replay.map_data);
+  const chkData = replay.map_data;
   const cv5 = cv5Bytes || new Uint8Array(0);
   const vf4 = vf4Bytes || new Uint8Array(0);
 
@@ -299,7 +299,7 @@ document.getElementById('repFile').addEventListener('change', async (e) => {
   repBytes = await readFile(e.target);
   if (!repBytes) return;
   try {
-    replay = parseReplay(repBytes);
+    replay = parseReplay(repBytes, { mapData: true });
     totalFrames = replay.header.frame_count;
     info.textContent = `Parsed: ${replay.header.map_name} (${totalFrames} frames)`;
     showMetadata();

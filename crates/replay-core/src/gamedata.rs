@@ -374,12 +374,56 @@ pub fn supply_provided(id: u16) -> u32 {
     match id {
         106 => 10, // Command Center
         109 => 8,  // Supply Depot
-        131 => 2,  // Hatchery (1 larva slot = 2 supply in BW)
-        132 => 2,  // Lair
-        133 => 2,  // Hive
+        131 => 1,  // Hatchery
+        132 => 1,  // Lair
+        133 => 1,  // Hive
         42 => 8,   // Overlord
         154 => 9,  // Nexus
         156 => 8,  // Pylon
+        _ => 0,
+    }
+}
+
+/// Build/train/morph time in game frames (units.dat values; 15 frames are one
+/// "game second", one frame is 42 ms on Fastest). 0 if unknown.
+pub fn build_time(id: u16) -> u32 {
+    match id {
+        // Terran units
+        0 | 32 => 360,          // Marine, Firebat
+        1 | 5 | 11 | 58 => 750, // Ghost, Siege Tank, Dropship, Valkyrie
+        2 | 34 => 450,          // Vulture, Medic
+        3 => 600,               // Goliath
+        7 | 41 | 64 => 300,     // SCV, Drone, Probe
+        8 => 900,               // Wraith
+        9 => 1200,              // Science Vessel
+        12 => 2000,             // Battlecruiser
+        // Zerg units
+        37 | 38 => 420,                 // Zergling, Hydralisk
+        39 => 900,                      // Ultralisk
+        42 | 43 | 44 | 62 | 103 => 600, // Overlord, Mutalisk, Guardian, Devourer, Lurker
+        45 | 46 => 750,                 // Queen, Defiler
+        47 => 450,                      // Scourge
+        // Protoss units
+        60 | 65 | 84 => 600, // Corsair, Zealot, Observer
+        61 | 66 | 67 => 750, // Dark Templar, Dragoon, High Templar
+        69 => 900,           // Shuttle
+        70 => 1200,          // Scout
+        71 => 2400,          // Arbiter
+        72 => 2100,          // Carrier
+        83 => 1050,          // Reaver
+        // Terran buildings
+        106 | 131 | 154 => 1800,       // Command Center, Hatchery, Nexus
+        109 | 110 | 149 | 157 => 600,  // Supply Depot, Refinery, Extractor, Assimilator
+        111..=113 | 123 | 142 => 1200, // Barracks, Academy, Factory, Armory, Spawning Pool
+        114 | 167 => 1050,             // Starport, Stargate
+        116 | 122 | 160 | 163 | 164 => 900, // Science Facility, Engineering Bay, Gateway, Citadel, Core
+        124 | 125 | 156 => 450,             // Missile Turret, Bunker, Pylon
+        132 => 1500,                        // Lair
+        133 | 141 => 1800,                  // Hive, Spire
+        135 | 139 | 166 => 600,             // Hydralisk Den, Evolution Chamber, Forge
+        143 => 300,                         // Creep Colony
+        155 => 1200,                        // Robotics Facility
+        162 | 165 => 750,                   // Photon Cannon, Templar Archives
         _ => 0,
     }
 }

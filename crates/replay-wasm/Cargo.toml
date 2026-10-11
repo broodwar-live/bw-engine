@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 replay-core = { path = "../replay-core" }
 bw-engine = { path = "../bw-engine", default-features = false, optional = true }
 wasm-bindgen.workspace = true
+js-sys.workspace = true
 serde.workspace = true
 serde-wasm-bindgen.workspace = true
 

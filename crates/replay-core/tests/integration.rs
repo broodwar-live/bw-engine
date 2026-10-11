@@ -270,7 +270,7 @@ fn test_classification_on_real_replay() {
         .map(|p| (p.player_id, p.race))
         .collect();
 
-    let classifications = replay_core::classify::classify_all(&replay.build_order, &players);
+    let classifications = replay_core::classify::classify_all(&replay.production, &players);
     assert_eq!(classifications.len(), 2, "should classify both players");
 
     for c in &classifications {
@@ -477,4 +477,189 @@ fn test_remastered_extra_sections_on_real_replays() {
     // Legacy replays have none.
     let legacy = replay_core::parse(&fixture("centauro_vs_djscan.rep")).unwrap();
     assert!(legacy.extra_sections.tags.is_empty());
+}
+
+#[test]
+fn test_polypoid_cclr_colors_override_header_colors() {
+    // The header color array says purple/yellow/blue/white, but the game was
+    // played with the colours stored in CCLR (brown/blue/lime/green).
+    let replay = replay_core::parse(&fixture("polypoid.rep")).unwrap();
+    let got: Vec<(String, u32, Option<u32>)> = replay
+        .header
+        .players
+        .iter()
+        .map(|p| (p.name.clone(), p.color, p.custom_color))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("Furinax Tribe".to_string(), 5, Some(0x703014)),
+            ("Dada".to_string(), 1, Some(0x0C48CC)),
+            ("Mar Sara".to_string(), 17, Some(0xD2F53C)),
+            ("Shelak Tribe".to_string(), 8, Some(0x088008)),
+        ]
+    );
+    for p in &replay.header.players {
+        assert_eq!(p.color_rgb(), p.custom_color);
+    }
+}
+
+#[test]
+fn test_map_names_normalized_on_fixtures() {
+    let cases = [
+        ("franky_vs_djscan.rep", "| iCCup | Python 1.3", "Python"),
+        ("centauro_vs_djscan.rep", "| iCCup | Python 1.3", "Python"),
+        ("larva_vs_mini.rep", "Transistor1.2", "Transistor"),
+        ("polypoid.rep", "Polypoid 1.65", "Polypoid"),
+        ("1v1melee.rep", "Road War", "Road War"),
+    ];
+    for (file, raw, normalized) in cases {
+        let replay = replay_core::parse(&fixture(file)).unwrap();
+        assert_eq!(replay.metadata.map_name_raw, raw, "{file}");
+        assert_eq!(replay.metadata.map_name, normalized, "{file}");
+    }
+}
+
+/// Supply counts at the first orders of each structure, in "9 pool" notation.
+fn supply_at_first(replay: &replay_core::Replay, player: &str, unit: u16, nth: usize) -> u32 {
+    use replay_core::analysis::BuildAction;
+    let pid = replay
+        .header
+        .players
+        .iter()
+        .find(|p| p.name == player)
+        .unwrap_or_else(|| panic!("no player {player}"))
+        .player_id;
+    replay
+        .production
+        .iter()
+        .filter(|e| e.player_id == pid && !e.dropped)
+        .filter(|e| matches!(e.action, BuildAction::Build(id) if id == unit))
+        .nth(nth)
+        .unwrap_or_else(|| panic!("{player}: no build #{nth} of {unit}"))
+        .supply
+}
+
+#[test]
+fn test_production_supply_counts_on_fixtures() {
+    const PYLON: u16 = 156;
+    const GATEWAY: u16 = 160;
+    const NEXUS: u16 = 154;
+    const FORGE: u16 = 166;
+    const BARRACKS: u16 = 111;
+    const DEPOT: u16 = 109;
+    const POOL: u16 = 142;
+    const HATCH: u16 = 131;
+
+    let cases: &[(&str, &str, u16, usize, u32)] = &[
+        // centauro: 9 pylon, 10 gate.
+        ("centauro_vs_djscan.rep", "centauro", PYLON, 0, 9),
+        ("centauro_vs_djscan.rep", "centauro", GATEWAY, 0, 10),
+        // djscan: 12 hatch, 11 pool (the hatch drone is gone).
+        ("centauro_vs_djscan.rep", "djscan", HATCH, 0, 12),
+        ("centauro_vs_djscan.rep", "djscan", POOL, 0, 11),
+        // franky2000: 7 rax, 9 depot, 10 rax.
+        ("franky_vs_djscan.rep", "franky2000", BARRACKS, 0, 7),
+        ("franky_vs_djscan.rep", "franky2000", DEPOT, 0, 9),
+        ("franky_vs_djscan.rep", "franky2000", BARRACKS, 1, 10),
+        // djscan: 4 pool.
+        ("franky_vs_djscan.rep", "djscan", POOL, 0, 4),
+        // Moo.Sapa: 8 pylon, 12 nexus, 13 forge (probe spam capped by queue).
+        ("larva_vs_mini.rep", "Moo.Sapa", PYLON, 0, 8),
+        ("larva_vs_mini.rep", "Moo.Sapa", NEXUS, 0, 12),
+        ("larva_vs_mini.rep", "Moo.Sapa", FORGE, 0, 13),
+        // adultrabbit: 12 pool, 11 hatch (drones are larva morphs).
+        ("larva_vs_mini.rep", "adultrabbit", POOL, 0, 12),
+        ("larva_vs_mini.rep", "adultrabbit", HATCH, 0, 11),
+        // Dada: 5 pool.
+        ("1v1melee.rep", "Dada", POOL, 0, 5),
+    ];
+    for &(file, player, unit, nth, want) in cases {
+        let replay = replay_core::parse(&fixture(file)).unwrap();
+        assert_eq!(
+            supply_at_first(&replay, player, unit, nth),
+            want,
+            "{file} {player} unit {unit} #{nth}"
+        );
+    }
+}
+
+#[test]
+fn test_timeline_starts_with_workers_and_main_building() {
+    let replay = replay_core::parse(&fixture("larva_vs_mini.rep")).unwrap();
+    assert_eq!(replay.timeline.len(), replay.build_order.len() + 1);
+    assert_eq!(replay.production.len(), replay.build_order.len());
+    let start = &replay.timeline[0];
+    let protoss = start.players.iter().find(|p| p.player_id == 1).unwrap();
+    let zerg = start.players.iter().find(|p| p.player_id == 0).unwrap();
+    assert_eq!((protoss.supply_used, protoss.supply_max), (4, 9));
+    assert_eq!(protoss.units[&64], 4);
+    assert_eq!(protoss.buildings[&154], 1);
+    assert_eq!((zerg.supply_used, zerg.supply_max), (4, 9));
+
+    // Probe spam must not inflate supply: at the first Pylon (0:48) the
+    // Protoss player had 8 supply, not ~34 as when every order counted.
+    let last = replay.timeline.last().unwrap();
+    for p in &last.players {
+        assert!(p.supply_used <= 200 && p.supply_max <= 200, "{p:?}");
+    }
+    // Deaths are not modelled, so late-game orders are never supply blocked.
+    assert!(replay.production.iter().all(|e| {
+        e.frame < replay_core::production::SUPPLY_GATE_FRAMES
+            || e.drop_reason != Some(replay_core::production::DropReason::SupplyBlocked)
+    }));
+}
+
+#[test]
+fn test_openings_on_fixtures() {
+    // Before the production model every Zerg pool read as "4/5 Pool"
+    // (drones are larva morphs, not Train orders) and Nexus/CC first could
+    // never match.
+    /// (player, tag, name)
+    type Expected<'a> = &'a [(&'a str, &'a str, &'a str)];
+    let cases: &[(&str, Expected)] = &[
+        (
+            "centauro_vs_djscan.rep",
+            &[
+                ("centauro", "1gate_core", "1 Gate Core"),
+                ("djscan", "12hatch", "12 Hatch → Lair"),
+            ],
+        ),
+        (
+            "franky_vs_djscan.rep",
+            &[
+                ("franky2000", "2rax", "2 Rax"),
+                ("djscan", "4pool", "4/5 Pool"),
+            ],
+        ),
+        (
+            "larva_vs_mini.rep",
+            &[
+                ("Moo.Sapa", "nexus_first", "Nexus First"),
+                ("adultrabbit", "12pool", "12 Pool → Lair"),
+            ],
+        ),
+        ("1v1melee.rep", &[("Dada", "4pool", "4/5 Pool")]),
+        ("polypoid.rep", &[("Dada", "unknown", "Unknown")]),
+    ];
+    for (file, want) in cases {
+        let replay = replay_core::parse(&fixture(file)).unwrap();
+        let openings = replay.openings();
+        assert_eq!(openings.len(), want.len(), "{file}: computers are skipped");
+        for (player, tag, name) in *want {
+            let pid = replay
+                .header
+                .players
+                .iter()
+                .find(|p| p.name == *player)
+                .unwrap()
+                .player_id;
+            let o = openings.iter().find(|o| o.player_id == pid).unwrap();
+            assert_eq!(
+                (o.tag.as_str(), o.name.as_str()),
+                (*tag, *name),
+                "{file} {player}"
+            );
+        }
+    }
 }
