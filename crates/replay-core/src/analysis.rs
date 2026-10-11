@@ -1,4 +1,4 @@
-use crate::command::{Command, GameCommand};
+use crate::command::{Command, GameCommand, HotkeyAction};
 use crate::gamedata;
 
 /// Frames per second at "Fastest" game speed.
@@ -79,30 +79,129 @@ pub struct ApmSample {
     pub eapm: f64,
 }
 
+/// Repeated `Build` orders for the same structure type by the same player
+/// within this many frames (about one real second) are UI double-clicks or
+/// placement retries; only the first is kept.
+pub const BUILD_RETRY_FRAMES: u32 = 24;
+
 /// Extract the build order from the command stream.
+///
+/// Duplicate `Build` orders (see [`BUILD_RETRY_FRAMES`]) are dropped; every
+/// other production order is kept as issued. Whether an order could actually
+/// be carried out (queue space, larvae, supply) is estimated separately by
+/// [`crate::production`].
 pub fn extract_build_order(commands: &[GameCommand]) -> Vec<BuildOrderEntry> {
-    commands
-        .iter()
-        .filter(|c| c.command.is_build_order_action())
-        .map(|c| {
-            let action = match &c.command {
-                Command::Build { unit_type, .. } => BuildAction::Build(*unit_type),
-                Command::Train { unit_type } => BuildAction::Train(*unit_type),
-                Command::UnitMorph { unit_type } => BuildAction::UnitMorph(*unit_type),
-                Command::BuildingMorph { unit_type } => BuildAction::BuildingMorph(*unit_type),
-                Command::Research { tech_type } => BuildAction::Research(*tech_type),
-                Command::Upgrade { upgrade_type } => BuildAction::Upgrade(*upgrade_type),
-                Command::TrainFighter => BuildAction::TrainFighter,
-                _ => unreachable!("is_build_order_action was true"),
-            };
+    build_orders_with_selection(commands)
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect()
+}
+
+/// The build order together with how many units the issuing player had
+/// selected for each order (at least 1). One Zerg morph order applies to every
+/// selected larva, so this is needed to count multi-larva morphs.
+pub(crate) fn build_orders_with_selection(commands: &[GameCommand]) -> Vec<(BuildOrderEntry, u16)> {
+    let mut selections = SelectionTracker::default();
+    // (player, building type) -> frame of the last kept Build order.
+    let mut last_build: Vec<(u8, u16, u32)> = Vec::new();
+    let mut out = Vec::new();
+
+    for c in commands {
+        selections.observe(c);
+        let action = match &c.command {
+            Command::Build { unit_type, .. } => BuildAction::Build(*unit_type),
+            Command::Train { unit_type } => BuildAction::Train(*unit_type),
+            Command::UnitMorph { unit_type } => BuildAction::UnitMorph(*unit_type),
+            Command::BuildingMorph { unit_type } => BuildAction::BuildingMorph(*unit_type),
+            Command::Research { tech_type } => BuildAction::Research(*tech_type),
+            Command::Upgrade { upgrade_type } => BuildAction::Upgrade(*upgrade_type),
+            Command::TrainFighter => BuildAction::TrainFighter,
+            _ => continue,
+        };
+
+        if let BuildAction::Build(unit_type) = action {
+            let key = last_build
+                .iter_mut()
+                .find(|(p, t, _)| *p == c.player_id && *t == unit_type);
+            match key {
+                Some((_, _, frame)) if c.frame.saturating_sub(*frame) <= BUILD_RETRY_FRAMES => {
+                    continue;
+                }
+                Some((_, _, frame)) => *frame = c.frame,
+                None => last_build.push((c.player_id, unit_type, c.frame)),
+            }
+        }
+
+        out.push((
             BuildOrderEntry {
                 frame: c.frame,
                 real_seconds: frame_to_seconds(c.frame),
                 player_id: c.player_id,
                 action,
+            },
+            selections.selected(c.player_id),
+        ));
+    }
+    out
+}
+
+/// Follows each player's current selection through select and hotkey
+/// commands. Only the number of selected units matters here.
+#[derive(Default)]
+struct SelectionTracker {
+    players: Vec<(u8, PlayerSelection)>,
+}
+
+#[derive(Default)]
+struct PlayerSelection {
+    current: Vec<u16>,
+    groups: [Vec<u16>; 10],
+}
+
+impl SelectionTracker {
+    fn player(&mut self, id: u8) -> &mut PlayerSelection {
+        let idx = match self.players.iter().position(|(p, _)| *p == id) {
+            Some(i) => i,
+            None => {
+                self.players.push((id, PlayerSelection::default()));
+                self.players.len() - 1
             }
-        })
-        .collect()
+        };
+        &mut self.players[idx].1
+    }
+
+    fn observe(&mut self, c: &GameCommand) {
+        let sel = self.player(c.player_id);
+        match &c.command {
+            Command::Select { unit_tags } => sel.current = unit_tags.clone(),
+            Command::SelectAdd { unit_tags } => {
+                for t in unit_tags {
+                    if !sel.current.contains(t) {
+                        sel.current.push(*t);
+                    }
+                }
+            }
+            Command::SelectRemove { unit_tags } => sel.current.retain(|t| !unit_tags.contains(t)),
+            Command::Hotkey { action, group } => {
+                let Some(slot) = sel.groups.get_mut(*group as usize) else {
+                    return;
+                };
+                match action {
+                    HotkeyAction::Assign => *slot = sel.current.clone(),
+                    HotkeyAction::Select => {
+                        if !slot.is_empty() {
+                            sel.current = slot.clone();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn selected(&mut self, id: u8) -> u16 {
+        (self.player(id).current.len() as u16).max(1)
+    }
 }
 
 /// Calculate overall APM and EAPM for each player.
@@ -206,7 +305,8 @@ pub fn frame_to_seconds(frame: u32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{Command, GameCommand, HotkeyAction};
+    use crate::command::HotkeyAction;
+    use crate::command::{Command, GameCommand};
 
     fn make_cmd(frame: u32, player_id: u8, command: Command) -> GameCommand {
         GameCommand {
@@ -242,6 +342,115 @@ mod tests {
         assert!(matches!(bo[1].action, BuildAction::Train(0x25)));
         assert!(matches!(bo[2].action, BuildAction::Research(5)));
         assert_eq!(bo[2].player_id, 1);
+    }
+
+    fn build(frame: u32, player_id: u8, unit_type: u16, x: u16) -> GameCommand {
+        make_cmd(
+            frame,
+            player_id,
+            Command::Build {
+                order: 0x1E,
+                x,
+                y: 10,
+                unit_type,
+            },
+        )
+    }
+
+    #[test]
+    fn test_extract_build_order_dedupes_build_retries_keeps_first() {
+        let commands = vec![
+            build(1000, 0, 156, 10), // Pylon
+            build(1004, 0, 156, 10), // double click
+            build(1020, 0, 156, 14), // placement retry elsewhere, < 1 s
+            build(1010, 1, 156, 10), // other player: kept
+            build(1030, 0, 160, 20), // Gateway: other type, kept
+            build(1300, 0, 156, 30), // second Pylon much later: kept
+        ];
+        let bo = extract_build_order(&commands);
+        let got: Vec<(u32, u8)> = bo.iter().map(|e| (e.frame, e.player_id)).collect();
+        assert_eq!(got, vec![(1000, 0), (1010, 1), (1030, 0), (1300, 0)]);
+    }
+
+    #[test]
+    fn test_extract_build_order_retry_window_is_about_one_second() {
+        let commands = vec![
+            build(1000, 0, 156, 10),
+            build(1000 + BUILD_RETRY_FRAMES, 0, 156, 10),
+            build(1000 + 2 * BUILD_RETRY_FRAMES + 1, 0, 156, 10),
+        ];
+        let bo = extract_build_order(&commands);
+        assert_eq!(bo.len(), 2);
+        assert_eq!(bo[1].frame, 1000 + 2 * BUILD_RETRY_FRAMES + 1);
+    }
+
+    #[test]
+    fn test_build_orders_with_selection_tracks_select_and_hotkeys() {
+        let commands = vec![
+            make_cmd(
+                1,
+                0,
+                Command::Select {
+                    unit_tags: vec![1, 2, 3],
+                },
+            ),
+            make_cmd(2, 0, Command::UnitMorph { unit_type: 41 }),
+            make_cmd(
+                3,
+                0,
+                Command::Hotkey {
+                    action: HotkeyAction::Assign,
+                    group: 4,
+                },
+            ),
+            make_cmd(4, 0, Command::SelectRemove { unit_tags: vec![2] }),
+            make_cmd(5, 0, Command::UnitMorph { unit_type: 41 }),
+            make_cmd(6, 0, Command::Select { unit_tags: vec![9] }),
+            make_cmd(
+                7,
+                0,
+                Command::Hotkey {
+                    action: HotkeyAction::Select,
+                    group: 4,
+                },
+            ),
+            make_cmd(
+                8,
+                0,
+                Command::SelectAdd {
+                    unit_tags: vec![7, 1],
+                },
+            ),
+            make_cmd(9, 0, Command::UnitMorph { unit_type: 41 }),
+            make_cmd(10, 1, Command::Train { unit_type: 64 }),
+        ];
+        let sel: Vec<u16> = build_orders_with_selection(&commands)
+            .iter()
+            .map(|(_, n)| *n)
+            .collect();
+        assert_eq!(sel, vec![3, 2, 4, 1]);
+    }
+
+    #[test]
+    fn test_extract_build_order_dedupes_on_fixture() {
+        // larva_vs_mini: Moo.Sapa clicked the Cybernetics Core three times
+        // within a second (3:24-3:25); only the first order is kept.
+        let path = format!(
+            "{}/../../tests/fixtures/larva_vs_mini.rep",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let replay = crate::parse(&std::fs::read(path).unwrap()).unwrap();
+        let cores: Vec<u32> = replay
+            .build_order
+            .iter()
+            .filter(|e| e.player_id == 1 && matches!(e.action, BuildAction::Build(164)))
+            .map(|e| e.frame)
+            .collect();
+        assert!(!cores.is_empty());
+        for w in cores.windows(2) {
+            assert!(w[1] - w[0] > BUILD_RETRY_FRAMES, "{cores:?}");
+        }
+        assert!(cores[0] < 5000, "first core kept: {cores:?}");
     }
 
     #[test]
