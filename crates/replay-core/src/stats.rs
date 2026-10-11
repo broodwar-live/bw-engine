@@ -367,6 +367,7 @@ mod tests {
         Replay {
             header,
             commands: vec![],
+            command_warnings: Default::default(),
             build_order: vec![],
             player_apm: vec![],
             timeline: vec![],

@@ -437,3 +437,22 @@ fn test_stats_collector_on_real_replays() {
         );
     }
 }
+
+#[test]
+fn test_command_stream_all_fixtures_parse_without_warnings() {
+    for name in [
+        "1v1melee.rep",
+        "larva_vs_mini.rep",
+        "polypoid.rep",
+        "centauro_vs_djscan.rep",
+        "franky_vs_djscan.rep",
+    ] {
+        let replay = replay_core::parse(&fixture(name)).expect(name);
+        assert!(
+            replay.command_warnings.is_clean(),
+            "{name}: {:?}",
+            replay.command_warnings
+        );
+        assert!(!replay.commands.is_empty(), "{name}: no commands");
+    }
+}

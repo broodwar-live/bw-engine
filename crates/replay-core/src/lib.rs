@@ -16,7 +16,7 @@ pub mod text;
 pub mod timeline;
 
 use analysis::{ApmSample, BuildOrderEntry, PlayerApm};
-use command::GameCommand;
+use command::{CommandParseWarnings, GameCommand};
 use error::{ReplayError, Result};
 use format::Format;
 use header::Header;
@@ -28,6 +28,9 @@ use timeline::TimelineSnapshot;
 pub struct Replay {
     pub header: Header,
     pub commands: Vec<GameCommand>,
+    /// Problems encountered while decoding the command stream (unknown or
+    /// truncated commands). Empty/zero for a cleanly parsed replay.
+    pub command_warnings: CommandParseWarnings,
     pub build_order: Vec<BuildOrderEntry>,
     pub player_apm: Vec<PlayerApm>,
     pub timeline: Vec<TimelineSnapshot>,
@@ -91,7 +94,7 @@ pub fn parse(data: &[u8]) -> Result<Replay> {
 
     // Section 2: Commands.
     let (section2, consumed2) = section::decompress_section(data, offset, fmt)?;
-    let commands = command::parse_commands(&section2);
+    let (commands, command_warnings) = command::parse_commands_with_warnings(&section2);
     offset += consumed2;
 
     // Skip size-marker between commands and map data.
@@ -127,6 +130,7 @@ pub fn parse(data: &[u8]) -> Result<Replay> {
     Ok(Replay {
         header: hdr,
         commands,
+        command_warnings,
         build_order,
         player_apm,
         timeline: tl,
