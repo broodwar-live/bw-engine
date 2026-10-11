@@ -218,4 +218,4 @@ Integration tests run the full simulation pipeline against 5 real replay fixture
 
 ## License
 
-MIT for code original to this project. Parts of `crates/bw-engine` were derived from OpenBW, which does not publish a licence; see [NOTICE](NOTICE) for provenance and what that means for those files.
+[MIT](LICENSE) for everything except `crates/bw-engine`. That crate is **not** MIT-licensed: parts of it are derived from OpenBW, which publishes no licence, so no licence is granted for it (see [NOTICE](NOTICE)). The replay parser (`replay-core`), the parser-only WASM build (`replay-wasm --no-default-features`) and `replay-nif` don't include it.
