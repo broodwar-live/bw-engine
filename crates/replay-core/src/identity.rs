@@ -194,16 +194,9 @@ impl IdentityResolver {
     /// Look up a name and return the canonical form.
     pub fn lookup(&self, name: &str) -> Option<&str> {
         let norm = normalize_name(name);
-        if self.appearances.contains_key(&norm.normalized) {
-            Some(
-                self.appearances
-                    .get_key_value(&norm.normalized)
-                    .map(|(k, _)| k.as_str())
-                    .unwrap(),
-            )
-        } else {
-            None
-        }
+        self.appearances
+            .get_key_value(&norm.normalized)
+            .map(|(k, _)| k.as_str())
     }
 }
 

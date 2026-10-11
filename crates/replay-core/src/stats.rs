@@ -233,7 +233,7 @@ impl StatsCollector {
                 }
             })
             .collect();
-        matchup_winrates.sort_by(|a, b| b.games.cmp(&a.games));
+        matchup_winrates.sort_by_key(|e| std::cmp::Reverse(e.games));
 
         // Map popularity.
         let total = self.total_replays.max(1) as f64;
@@ -246,7 +246,7 @@ impl StatsCollector {
                 percentage: count as f64 / total * 100.0,
             })
             .collect();
-        map_popularity.sort_by(|a, b| b.games.cmp(&a.games));
+        map_popularity.sort_by_key(|e| std::cmp::Reverse(e.games));
 
         // Race popularity.
         let total_player_slots: f64 = self.race_popularity.values().sum::<u32>() as f64;
@@ -260,7 +260,7 @@ impl StatsCollector {
                 percentage: count as f64 / total_player_slots * 100.0,
             })
             .collect();
-        race_popularity.sort_by(|a, b| b.games.cmp(&a.games));
+        race_popularity.sort_by_key(|e| std::cmp::Reverse(e.games));
 
         // Matchup durations.
         let mut matchup_durations: Vec<MatchupDuration> = self
@@ -276,7 +276,7 @@ impl StatsCollector {
                 games: *count,
             })
             .collect();
-        matchup_durations.sort_by(|a, b| b.games.cmp(&a.games));
+        matchup_durations.sort_by_key(|e| std::cmp::Reverse(e.games));
 
         StatsReport {
             total_replays: self.total_replays,
@@ -332,6 +332,7 @@ mod tests {
                 team: 0,
                 name: "Player0".to_string(),
                 color: 0,
+                custom_color: None,
             },
             Player {
                 slot_id: 1,
@@ -341,6 +342,7 @@ mod tests {
                 team: 1,
                 name: "Player1".to_string(),
                 color: 1,
+                custom_color: None,
             },
         ];
         let header = Header {
@@ -367,10 +369,12 @@ mod tests {
         Replay {
             header,
             commands: vec![],
+            command_warnings: Default::default(),
             build_order: vec![],
             player_apm: vec![],
             timeline: vec![],
             metadata: meta,
+            extra_sections: Default::default(),
             map_data: vec![],
         }
     }

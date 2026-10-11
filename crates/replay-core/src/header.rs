@@ -1,4 +1,5 @@
 use crate::error::{ReplayError, Result};
+use crate::text::decode_bw_string as decode_string;
 
 /// Expected size of the header section (section 1).
 pub const HEADER_SIZE: usize = 0x279; // 633 bytes
@@ -12,7 +13,9 @@ const PLAYER_SLOT_COUNT: usize = 12;
 /// Offset of the player color array (8 x u32).
 const PLAYER_COLORS_OFFSET: usize = 0x251;
 
-/// Expected size of the player names section (section 4).
+/// Minimum size of the player names section (section 4): 8 x 96 bytes.
+/// Remastered writes all 12 slots (1152 bytes); slots beyond the section's
+/// length are left with their header name.
 pub const PLAYER_NAMES_SIZE: usize = 0x300; // 768 bytes
 /// Size of each extended name entry.
 const EXTENDED_NAME_SIZE: usize = 96;
@@ -138,6 +141,8 @@ pub struct Player {
     pub team: u8,
     pub name: String,
     pub color: u32,
+    /// Custom colour (`0xRRGGBB`) from the Remastered `CCLR` section, if set.
+    pub custom_color: Option<u32>,
 }
 
 // -- Parsing --
@@ -157,32 +162,6 @@ fn read_u32(data: &[u8], offset: usize) -> u32 {
         data[offset + 2],
         data[offset + 3],
     ])
-}
-
-/// Decode a null-terminated byte string, trying UTF-8 first, then EUC-KR.
-/// Strips StarCraft text color/formatting control characters (bytes < 0x20
-/// except tab and newline).
-fn decode_string(bytes: &[u8]) -> String {
-    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    // Strip SC control characters before decoding.
-    let raw: Vec<u8> = bytes[..end]
-        .iter()
-        .copied()
-        .filter(|&b| b >= 0x20 || b == b'\t' || b == b'\n')
-        .collect();
-
-    if raw.is_empty() {
-        return String::new();
-    }
-
-    // Try UTF-8 first.
-    if let Ok(s) = std::str::from_utf8(&raw) {
-        return s.to_owned();
-    }
-
-    // Fall back to EUC-KR (CP949) for Korean names.
-    let (decoded, _, _) = encoding_rs::EUC_KR.decode(&raw);
-    decoded.into_owned()
 }
 
 /// Parse the header from decompressed section 1 data.
@@ -244,6 +223,7 @@ pub fn parse_header(data: &[u8]) -> Result<Header> {
             team,
             name,
             color,
+            custom_color: None,
         });
     }
 
@@ -265,20 +245,22 @@ pub fn parse_header(data: &[u8]) -> Result<Header> {
 /// Override truncated player names (25 bytes) with extended names (96 bytes)
 /// from section 4.
 pub fn apply_extended_names(header: &mut Header, section4: &[u8]) {
-    if section4.len() < PLAYER_NAMES_SIZE {
-        return;
-    }
-
     for player in &mut header.players {
-        let slot = player.slot_id as usize;
-        if slot >= PLAYER_SLOT_COUNT {
+        let base = player.slot_id as usize * EXTENDED_NAME_SIZE;
+        let Some(raw) = section4.get(base..base + EXTENDED_NAME_SIZE) else {
             continue;
-        }
-        let base = slot * EXTENDED_NAME_SIZE;
-        let extended = decode_string(&section4[base..base + EXTENDED_NAME_SIZE]);
+        };
+        let extended = decode_string(raw);
         if !extended.is_empty() {
             player.name = extended;
         }
+    }
+}
+
+/// Apply custom player colours (indexed by slot) from the `CCLR` section.
+pub fn apply_custom_colors(header: &mut Header, colors: &[Option<u32>]) {
+    for player in &mut header.players {
+        player.custom_color = colors.get(player.slot_id as usize).copied().flatten();
     }
 }
 

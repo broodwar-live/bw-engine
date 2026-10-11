@@ -1323,8 +1323,18 @@ impl Game {
                 continue;
             };
 
+            // The attacker may have died (or been removed) earlier in this
+            // pass, e.g. from splash damage dealt by another attack.
+            let Some(attacker) = self
+                .units
+                .get(attacker_idx)
+                .and_then(Option::as_ref)
+                .filter(|u| u.alive)
+            else {
+                continue;
+            };
+
             // Select the right weapon based on target type (air vs ground).
-            let attacker = self.units[attacker_idx].as_ref().unwrap();
             let weapon_id = if target_is_air {
                 attacker.air_weapon
             } else {
@@ -1467,7 +1477,14 @@ impl Game {
                 }
             } else if dist_sq > range_sq {
                 self.debug_out_of_range += 1;
-                let attacker = self.units[attacker_idx].as_mut().unwrap();
+                let Some(attacker) = self
+                    .units
+                    .get_mut(attacker_idx)
+                    .and_then(Option::as_mut)
+                    .filter(|u| u.alive)
+                else {
+                    continue;
+                };
                 if attacker.move_state != MoveState::Moving
                     || attacker.move_target != Some((tx as u16, ty as u16))
                 {
@@ -2109,6 +2126,35 @@ mod tests {
 
         assert!(game.unit_by_tag(1).is_none(), "target should be dead");
         assert!(game.unit_by_tag(0).is_some(), "attacker should be alive");
+    }
+
+    #[test]
+    fn test_attack_dead_attacker_does_not_fire_same_frame() {
+        let mut game = Game::new(test_map(), test_game_data());
+        // Two adjacent marines on 1 HP, both in range with weapons ready.
+        game.load_initial_units(&[
+            make_chk_unit(0, 50, 50, 0, 0),
+            make_chk_unit(1, 60, 50, 0, 1),
+        ])
+        .unwrap();
+        for slot in game.units.iter_mut().flatten() {
+            slot.hp = 1;
+        }
+
+        for _ in 0..50 {
+            game.step();
+            if game.unit_by_tag(0).is_none() || game.unit_by_tag(1).is_none() {
+                break;
+            }
+        }
+
+        // Whoever fires first wins; the unit it kills must not shoot back
+        // from beyond the grave in the same combat pass.
+        let alive = [0, 1]
+            .iter()
+            .filter(|&&t| game.unit_by_tag(t).is_some())
+            .count();
+        assert_eq!(alive, 1, "exactly one marine should survive");
     }
 
     #[test]

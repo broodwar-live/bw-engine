@@ -1,0 +1,62 @@
+bw-engine — provenance and third-party references
+==================================================
+
+This file describes where the knowledge and code in this repository came
+from. It is a good-faith description, not legal advice.
+
+replay-core (replay parser) — crates/replay-core
+-------------------------------------------------
+Written independently for this project. The replay container format,
+command payload lengths, and Remastered section layout (SKIN, LMTS, BFIX,
+CCLR, GCFG) were cross-checked against the publicly documented behaviour
+of:
+
+  * screp (https://github.com/icza/screp), Apache License 2.0
+  * BWAPI (https://github.com/bwapi/bwapi), LGPL-3.0
+
+Only factual format details (byte offsets, field sizes, opcode lengths)
+were used; no source code was copied. Custom player colours from CCLR are
+decoded directly from their float RGBA encoding rather than via screp's
+colour lookup table.
+
+bw-engine (simulation and asset parsing) — crates/bw-engine
+-----------------------------------------------------------
+The simulation (game loop, movement, pathfinding, combat, vision) and parts
+of the map loader were written by studying OpenBW's `bwgame.h`
+(https://github.com/OpenBW/openbw; mirror at
+https://github.com/broodwar-live/openbw). Source comments cite the
+`bwgame.h` line numbers that were used as the behavioural reference.
+
+Most of the engine is an independent Rust design that reproduces BW
+behaviour. However, some parts follow OpenBW closely enough to be
+considered derived from it:
+
+  * crates/bw-engine/src/direction.rs — the 256-entry direction unit
+    vector table is the same data as OpenBW's `direction_table`.
+  * crates/bw-engine/src/map.rs — mega-tile flag summarisation
+    (walkable/height thresholds) and border-tile flag rules mirror
+    `bwgame.h` closely, statement for statement.
+  * crates/bw-engine/src/tileset.rs, chk.rs, game.rs (starting-unit
+    order), fp8.rs, unit.rs — constants, ordering and fixed-point
+    conventions matched against OpenBW.
+
+The values in these tables and thresholds originate from StarCraft: Brood
+War itself (OpenBW reverse-engineered them); they are functional game
+constants rather than creative expression, but they were obtained via
+OpenBW.
+
+As of this writing, the OpenBW/openbw repository does not include a
+licence file or licence headers. OpenBW's BWAPI fork
+(https://github.com/OpenBW/bwapi) is LGPL-3.0. Without an explicit licence
+from the OpenBW authors, the MIT licence declared for this workspace cannot
+be assumed to cover the OpenBW-derived portions of crates/bw-engine listed
+above. The replay parser (replay-core) and its bindings do not depend on
+them; a parser-only build (`replay-wasm --no-default-features`,
+`replay-nif`) excludes the simulation entirely.
+
+Trademarks
+----------
+StarCraft and Brood War are registered trademarks of Blizzard
+Entertainment, Inc. This project is not affiliated with or endorsed by
+Blizzard Entertainment or Microsoft. No Blizzard game data files are
+distributed; users supply their own `.dat`, tileset and MPQ files.

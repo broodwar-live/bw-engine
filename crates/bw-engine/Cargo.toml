@@ -13,6 +13,12 @@ flate2.workspace = true
 explode.workspace = true
 encoding_rs.workspace = true
 
+[features]
+default = ["sim"]
+# Experimental game simulation (game loop, units, pathfinding, vision).
+# Map/CHK/MPQ/asset parsing is always available.
+sim = []
+
 [dev-dependencies]
 replay-core = { path = "../replay-core" }
 criterion.workspace = true
@@ -20,3 +26,12 @@ criterion.workspace = true
 [[bench]]
 name = "simulation"
 harness = false
+required-features = ["sim"]
+
+[[test]]
+name = "replay_sim"
+required-features = ["sim"]
+
+[[test]]
+name = "real_data"
+required-features = ["sim"]

@@ -1,4 +1,4 @@
-use crate::chk::ChkSection;
+use crate::chk::{ChkSection, read_u16, read_u32};
 use crate::error::Result;
 
 const UNIT_ENTRY_SIZE: usize = 36;
@@ -31,51 +31,35 @@ pub fn parse_chk_units(sections: &[ChkSection<'_>]) -> Result<Vec<ChkUnit>> {
         return Ok(Vec::new()); // No UNIT section — no preplaced units.
     };
 
-    let count = data.len() / UNIT_ENTRY_SIZE;
-    let mut units = Vec::with_capacity(count);
-
-    for i in 0..count {
-        let base = i * UNIT_ENTRY_SIZE;
-        if base + UNIT_ENTRY_SIZE > data.len() {
-            break;
-        }
-
-        let instance_id = u32::from_le_bytes(data[base..base + 4].try_into().unwrap());
-        let x = u16::from_le_bytes(data[base + 4..base + 6].try_into().unwrap());
-        let y = u16::from_le_bytes(data[base + 6..base + 8].try_into().unwrap());
-        let unit_type = u16::from_le_bytes(data[base + 8..base + 10].try_into().unwrap());
-        // bytes 10-11: link
-        // bytes 12-13: valid_flags
-        // bytes 14-15: valid_properties
-        let owner = data[base + 16];
-        let hp_percent = data[base + 17];
-        let shield_percent = data[base + 18];
-        let energy_percent = data[base + 19];
-        let resources = u32::from_le_bytes(data[base + 20..base + 24].try_into().unwrap());
-        // bytes 24-25: units_in_hangar
-        // bytes 26-27: state_flags
-        // bytes 28-31: unused
-        // bytes 32-35: related_unit_id
-
+    let (entries, _) = data.as_chunks::<UNIT_ENTRY_SIZE>();
+    let units = entries
+        .iter()
+        .filter_map(|e| parse_unit_entry(e))
         // Skip invalid entries (unit_type 0xFFFF) and out-of-range types.
-        if unit_type == 0xFFFF || unit_type >= 228 {
-            continue;
-        }
-
-        units.push(ChkUnit {
-            instance_id,
-            x,
-            y,
-            unit_type,
-            owner,
-            hp_percent,
-            shield_percent,
-            energy_percent,
-            resources,
-        });
-    }
+        .filter(|u| u.unit_type != 0xFFFF && u.unit_type < 228)
+        .collect();
 
     Ok(units)
+}
+
+/// Decode one 36-byte CHK `UNIT` entry.
+///
+/// Layout: u32 instance id, u16 x, u16 y, u16 unit type, u16 link,
+/// u16 valid flags, u16 valid properties, u8 owner, u8 hp%, u8 shield%,
+/// u8 energy%, u32 resources, u16 hangar count, u16 state flags,
+/// u32 unused, u32 related unit id.
+fn parse_unit_entry(e: &[u8]) -> Option<ChkUnit> {
+    Some(ChkUnit {
+        instance_id: read_u32(e, 0)?,
+        x: read_u16(e, 4)?,
+        y: read_u16(e, 6)?,
+        unit_type: read_u16(e, 8)?,
+        owner: *e.get(16)?,
+        hp_percent: *e.get(17)?,
+        shield_percent: *e.get(18)?,
+        energy_percent: *e.get(19)?,
+        resources: read_u32(e, 20)?,
+    })
 }
 
 /// Start Location unit type ID.
@@ -95,25 +79,13 @@ pub fn parse_start_locations(sections: &[ChkSection<'_>]) -> Vec<(u8, u16, u16)>
         return Vec::new();
     };
 
-    let count = data.len() / UNIT_ENTRY_SIZE;
-    let mut locations = Vec::new();
-
-    for i in 0..count {
-        let base = i * UNIT_ENTRY_SIZE;
-        if base + UNIT_ENTRY_SIZE > data.len() {
-            break;
-        }
-        let x = u16::from_le_bytes(data[base + 4..base + 6].try_into().unwrap());
-        let y = u16::from_le_bytes(data[base + 6..base + 8].try_into().unwrap());
-        let unit_type = u16::from_le_bytes(data[base + 8..base + 10].try_into().unwrap());
-        let owner = data[base + 16];
-
-        if unit_type == START_LOCATION {
-            locations.push((owner, x, y));
-        }
-    }
-
-    locations
+    let (entries, _) = data.as_chunks::<UNIT_ENTRY_SIZE>();
+    entries
+        .iter()
+        .filter_map(|e| parse_unit_entry(e))
+        .filter(|u| u.unit_type == START_LOCATION)
+        .map(|u| (u.owner, u.x, u.y))
+        .collect()
 }
 
 #[cfg(test)]
