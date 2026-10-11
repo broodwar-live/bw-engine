@@ -270,7 +270,7 @@ fn test_classification_on_real_replay() {
         .map(|p| (p.player_id, p.race))
         .collect();
 
-    let classifications = replay_core::classify::classify_all(&replay.build_order, &players);
+    let classifications = replay_core::classify::classify_all(&replay.production, &players);
     assert_eq!(classifications.len(), 2, "should classify both players");
 
     for c in &classifications {
@@ -608,4 +608,58 @@ fn test_timeline_starts_with_workers_and_main_building() {
         e.frame < replay_core::production::SUPPLY_GATE_FRAMES
             || e.drop_reason != Some(replay_core::production::DropReason::SupplyBlocked)
     }));
+}
+
+#[test]
+fn test_openings_on_fixtures() {
+    // Before the production model every Zerg pool read as "4/5 Pool"
+    // (drones are larva morphs, not Train orders) and Nexus/CC first could
+    // never match.
+    /// (player, tag, name)
+    type Expected<'a> = &'a [(&'a str, &'a str, &'a str)];
+    let cases: &[(&str, Expected)] = &[
+        (
+            "centauro_vs_djscan.rep",
+            &[
+                ("centauro", "1gate_core", "1 Gate Core"),
+                ("djscan", "12hatch", "12 Hatch → Lair"),
+            ],
+        ),
+        (
+            "franky_vs_djscan.rep",
+            &[
+                ("franky2000", "2rax", "2 Rax"),
+                ("djscan", "4pool", "4/5 Pool"),
+            ],
+        ),
+        (
+            "larva_vs_mini.rep",
+            &[
+                ("Moo.Sapa", "nexus_first", "Nexus First"),
+                ("adultrabbit", "12pool", "12 Pool → Lair"),
+            ],
+        ),
+        ("1v1melee.rep", &[("Dada", "4pool", "4/5 Pool")]),
+        ("polypoid.rep", &[("Dada", "unknown", "Unknown")]),
+    ];
+    for (file, want) in cases {
+        let replay = replay_core::parse(&fixture(file)).unwrap();
+        let openings = replay.openings();
+        assert_eq!(openings.len(), want.len(), "{file}: computers are skipped");
+        for (player, tag, name) in *want {
+            let pid = replay
+                .header
+                .players
+                .iter()
+                .find(|p| p.name == *player)
+                .unwrap()
+                .player_id;
+            let o = openings.iter().find(|o| o.player_id == pid).unwrap();
+            assert_eq!(
+                (o.tag.as_str(), o.name.as_str()),
+                (*tag, *name),
+                "{file} {player}"
+            );
+        }
+    }
 }

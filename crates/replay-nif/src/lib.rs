@@ -411,7 +411,7 @@ fn classify_opening<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Term<'
                 .iter()
                 .map(|p| (p.player_id, p.race))
                 .collect();
-            let results = replay_core::classify::classify_all(&replay.build_order, &players);
+            let results = replay_core::classify::classify_all(&replay.production, &players);
             let list = encode_classifications(env, &results)?;
             Ok((atoms::ok(), list).encode(env))
         }

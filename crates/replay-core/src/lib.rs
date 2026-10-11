@@ -52,6 +52,25 @@ pub struct Replay {
 }
 
 impl Replay {
+    /// Players that issue commands (computer players, which share id 255,
+    /// are left out) with their race.
+    #[must_use]
+    pub fn active_players(&self) -> Vec<(u8, header::Race)> {
+        modelled_players(&self.header)
+    }
+
+    /// Opening classification for each active player (see [`classify`]).
+    #[must_use]
+    pub fn openings(&self) -> Vec<classify::OpeningClassification> {
+        classify::classify_all(&self.production, &self.active_players())
+    }
+
+    /// Game phases from the build order (see [`phases`]).
+    #[must_use]
+    pub fn phases(&self) -> phases::PhaseAnalysis {
+        phases::detect_phases(&self.build_order, self.header.frame_count)
+    }
+
     /// Calculate APM over time for graphing.
     ///
     /// `window_secs` — sliding window size in real seconds (default 60).

@@ -1,25 +1,42 @@
 //! Build order classification — label openings by name.
 //!
-//! Matches the first N build order actions against known competitive BW
-//! opening patterns per race. Returns the best-matching opening name and
-//! confidence score.
+//! Matches a player's opening against known competitive BW opening patterns
+//! per race. Works on the production model output
+//! ([`crate::production::ProductionEntry`]), so orders that could not have
+//! been carried out are ignored, workers are recognised for every race (Zerg
+//! drones are larva morphs), and pool timing uses the modelled supply count.
 //!
 //! ## Known openings
 //!
-//! - **Terran**: Barracks first, 2 Rax, 1-1-1, FD (Factory → Depot), Bio push, Mech
-//! - **Zerg**: 4/5/9/12 Pool, 12 Hatch, 3 Hatch before Pool, Lair tech
-//! - **Protoss**: 2 Gate, 1 Gate Core, Forge FE, Nexus First, DT rush, Fast Expand
+//! - **Terran**: CC First, Bunker Rush, 1-1-1, 2 Rax (Academy), Bio,
+//!   1 Rax FE, Factory Expand, Mech, Rax Factory, Barracks First
+//! - **Zerg**: 4/5 Pool, 9 Pool, Overpool, 12 Pool, 12 Hatch,
+//!   3 Hatch Before Pool, each optionally followed by its tech ("→ Muta",
+//!   "→ Hydra", "→ Lair")
+//! - **Protoss**: Nexus First, Forge FE (+ Cannon), DT Rush, 2 Gate (Core),
+//!   1 Gate Stargate/Robo/Citadel/FE/Core, Gateway First
 
-use crate::analysis::{BuildAction, BuildOrderEntry};
+use crate::analysis::BuildAction;
 use crate::header::Race;
+use crate::production::{ProductionEntry, is_worker_order};
+
+/// Only orders in the first four real minutes define the opening.
+pub const OPENING_SECONDS: f64 = 240.0;
+/// At most this many non-worker orders are considered.
+pub const OPENING_ACTIONS: usize = 20;
 
 /// Result of classifying a player's opening build order.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct OpeningClassification {
-    /// Human-readable opening name (e.g., "9 Pool", "1 Gate Core").
+    /// Player the classification is for.
+    pub player_id: u8,
+    /// Human-readable opening name (e.g., "9 Pool", "12 Pool → Lair").
     pub name: String,
     /// Short tag for database indexing (e.g., "9pool", "1gate_core").
     pub tag: String,
+    /// Tech the opening heads into, if part of the name (Zerg: "muta",
+    /// "hydra", "lair").
+    pub follow_up: Option<String>,
     /// Confidence score (0.0–1.0). Higher = more certain match.
     pub confidence: f64,
     /// Player's race.
@@ -28,53 +45,78 @@ pub struct OpeningClassification {
     pub actions_analyzed: usize,
 }
 
-/// Classify a player's opening from their build order.
+/// Classify a player's opening from the production model output.
 ///
-/// Analyzes the first `max_actions` build actions (default 15) for the
-/// given player and matches against known opening patterns.
+/// Considers the first [`OPENING_ACTIONS`] non-worker orders of the first
+/// [`OPENING_SECONDS`] that the model judged as carried out.
+#[must_use]
 pub fn classify_opening(
-    build_order: &[BuildOrderEntry],
+    production: &[ProductionEntry],
     player_id: u8,
     race: &Race,
 ) -> OpeningClassification {
-    let actions: Vec<&BuildAction> = build_order
+    let entries: Vec<&ProductionEntry> = production
         .iter()
-        .filter(|e| e.player_id == player_id)
-        .take(20)
-        .map(|e| &e.action)
+        .filter(|e| {
+            e.player_id == player_id
+                && !e.dropped
+                && !is_worker_order(&e.action)
+                && e.real_seconds < OPENING_SECONDS
+        })
+        .take(OPENING_ACTIONS)
         .collect();
 
-    let race_str = match race {
-        Race::Terran => "T",
-        Race::Protoss => "P",
-        Race::Zerg => "Z",
-        Race::Unknown(_) => "?",
-    };
+    let race_str = race.code();
 
-    let (name, tag, confidence) = match race {
-        Race::Terran => classify_terran(&actions),
-        Race::Zerg => classify_zerg(&actions, build_order, player_id),
-        Race::Protoss => classify_protoss(&actions),
-        Race::Unknown(_) => ("Unknown".to_string(), "unknown".to_string(), 0.0),
+    let (name, tag, follow_up, confidence) = match race {
+        Race::Terran => no_follow_up(classify_terran(&entries)),
+        Race::Zerg => classify_zerg(&entries),
+        Race::Protoss => no_follow_up(classify_protoss(&entries)),
+        Race::Unknown(_) => ("Unknown".to_string(), "unknown".to_string(), None, 0.0),
     };
 
     OpeningClassification {
+        player_id,
         name,
         tag,
+        follow_up,
         confidence,
         race: race_str.to_string(),
-        actions_analyzed: actions.len(),
+        actions_analyzed: entries.len(),
     }
 }
 
-/// Classify all players' openings from a replay's build order.
+/// Classify all players' openings.
+#[must_use]
 pub fn classify_all(
-    build_order: &[BuildOrderEntry],
+    production: &[ProductionEntry],
     players: &[(u8, Race)],
 ) -> Vec<OpeningClassification> {
     players
         .iter()
-        .map(|(pid, race)| classify_opening(build_order, *pid, race))
+        .map(|(pid, race)| classify_opening(production, *pid, race))
+        .collect()
+}
+
+type Label = (String, String, f64);
+
+fn label(name: &str, tag: &str, confidence: f64) -> Label {
+    (name.to_string(), tag.to_string(), confidence)
+}
+
+fn no_follow_up((name, tag, c): Label) -> (String, String, Option<String>, f64) {
+    (name, tag, None, c)
+}
+
+/// Structures (and, for Zerg, building morphs) in order.
+fn structures(entries: &[&ProductionEntry], with_morphs: bool) -> Vec<u16> {
+    entries
+        .iter()
+        .filter_map(|e| match e.action {
+            BuildAction::Build(id) => Some(id),
+            BuildAction::BuildingMorph(id) if with_morphs => Some(id),
+            _ => None,
+        })
         .collect()
 }
 
@@ -90,13 +132,13 @@ const COMMAND_CENTER: u16 = 106;
 const SUPPLY_DEPOT: u16 = 109;
 const REFINERY: u16 = 110;
 const BUNKER: u16 = 125;
-const MACHINE_SHOP: u16 = 120;
 
 const SPAWNING_POOL: u16 = 142;
 const HATCHERY: u16 = 131;
 const LAIR: u16 = 132;
 const HYDRA_DEN: u16 = 135;
 const SPIRE: u16 = 141;
+const OVERLORD: u16 = 42;
 
 const GATEWAY: u16 = 160;
 const FORGE: u16 = 166;
@@ -114,205 +156,183 @@ const CANNON: u16 = 162;
 // Terran classification
 // ---------------------------------------------------------------------------
 
-fn classify_terran(actions: &[&BuildAction]) -> (String, String, f64) {
-    let buildings: Vec<u16> = actions
-        .iter()
-        .filter_map(|a| match a {
-            BuildAction::Build(id) => Some(*id),
-            _ => None,
-        })
-        .collect();
-
+fn classify_terran(entries: &[&ProductionEntry]) -> Label {
+    let buildings = structures(entries, false);
     if buildings.is_empty() {
-        return ("Unknown".into(), "unknown".into(), 0.0);
+        return label("Unknown", "unknown", 0.0);
     }
 
+    let pos = |id: u16| buildings.iter().position(|&b| b == id);
     let rax_count = buildings.iter().filter(|&&b| b == BARRACKS).count();
     let has_factory = buildings.contains(&FACTORY);
     let has_starport = buildings.contains(&STARPORT);
     let has_academy = buildings.contains(&ACADEMY);
-    let cc_count = buildings.iter().filter(|&&b| b == COMMAND_CENTER).count();
+    let factory_idx = pos(FACTORY);
+    let cc_idx = pos(COMMAND_CENTER);
 
-    // Check order-sensitive patterns.
-    let first_production = buildings
+    // First production-relevant structure (supply and gas excluded). The
+    // main Command Center is not in the build order, so a Command Center here
+    // is an expansion.
+    let first = buildings
         .iter()
-        .find(|&&b| b != SUPPLY_DEPOT && b != REFINERY && b != COMMAND_CENTER);
+        .copied()
+        .find(|&b| b != SUPPLY_DEPOT && b != REFINERY);
+
+    // CC first (fast expand before any Barracks).
+    if first == Some(COMMAND_CENTER) {
+        return label("CC First", "cc_first", 0.8);
+    }
+
+    // Bunker rush: early Bunker, before any expansion or Factory.
+    if let Some(bi) = pos(BUNKER)
+        && bi < 4
+        && cc_idx.is_none_or(|c| bi < c)
+        && factory_idx.is_none_or(|f| bi < f)
+    {
+        return label("Bunker Rush", "bunker_rush", 0.7);
+    }
 
     // 1-1-1: Barracks, Factory, Starport.
-    if rax_count >= 1 && has_factory && has_starport && !buildings.contains(&ACADEMY) {
-        return ("1-1-1".into(), "111".into(), 0.85);
+    if rax_count >= 1 && has_factory && has_starport && !has_academy {
+        return label("1-1-1", "111", 0.85);
     }
 
-    // 2 Rax: two barracks before factory.
+    // 2 Rax: two Barracks before any Factory.
     if rax_count >= 2 && !has_factory {
         if has_academy {
-            return ("2 Rax Academy".into(), "2rax_academy".into(), 0.8);
+            return label("2 Rax Academy", "2rax_academy", 0.8);
         }
-        return ("2 Rax".into(), "2rax".into(), 0.8);
+        return label("2 Rax", "2rax", 0.8);
     }
 
-    // Bio: Barracks + Academy, no factory early.
-    if rax_count >= 1 && has_academy && !has_factory {
-        return ("Bio".into(), "bio".into(), 0.7);
-    }
-
-    // Mech: Factory before second Barracks.
-    if has_factory && rax_count == 1 {
-        if has_starport {
-            return ("Mech".into(), "mech".into(), 0.75);
-        }
-        let has_machine_shop = buildings.contains(&MACHINE_SHOP);
-        if has_machine_shop {
-            return ("Factory Expand".into(), "fe_factory".into(), 0.7);
-        }
-        return ("1 Rax FE".into(), "1rax_fe".into(), 0.6);
-    }
-
-    // CC first (FE).
-    if cc_count >= 2 && first_production == Some(&COMMAND_CENTER) {
-        return ("CC First".into(), "cc_first".into(), 0.75);
-    }
-
-    // Bunker rush.
-    if buildings.contains(&BUNKER) && buildings.iter().position(|&b| b == BUNKER).unwrap_or(99) < 4
+    // 1 Rax FE: Command Center after one Barracks, before any Factory.
+    if rax_count == 1
+        && let Some(c) = cc_idx
+        && factory_idx.is_none_or(|f| c < f)
     {
-        return ("Bunker Rush".into(), "bunker_rush".into(), 0.7);
+        return label("1 Rax FE", "1rax_fe", 0.75);
+    }
+
+    // Bio: Barracks + Academy, no Factory early.
+    if rax_count >= 1 && has_academy && !has_factory {
+        return label("Bio", "bio", 0.7);
+    }
+
+    // Factory builds with a single Barracks.
+    if has_factory && rax_count == 1 {
+        if let (Some(f), Some(c)) = (factory_idx, cc_idx)
+            && c > f
+        {
+            return label("Factory Expand", "fe_factory", 0.75);
+        }
+        if has_starport {
+            return label("Mech", "mech", 0.7);
+        }
+        return label("Rax Factory", "rax_factory", 0.6);
     }
 
     // Default: Barracks first.
-    if first_production == Some(&BARRACKS) {
-        return ("Barracks First".into(), "rax_first".into(), 0.5);
+    if first == Some(BARRACKS) {
+        return label("Barracks First", "rax_first", 0.5);
     }
 
-    ("Unknown Terran".into(), "unknown_t".into(), 0.3)
+    label("Unknown Terran", "unknown_t", 0.3)
 }
 
 // ---------------------------------------------------------------------------
 // Zerg classification
 // ---------------------------------------------------------------------------
 
-fn classify_zerg(
-    actions: &[&BuildAction],
-    build_order: &[BuildOrderEntry],
-    player_id: u8,
-) -> (String, String, f64) {
-    let buildings: Vec<u16> = actions
-        .iter()
-        .filter_map(|a| match a {
-            BuildAction::Build(id) | BuildAction::BuildingMorph(id) => Some(*id),
-            _ => None,
-        })
-        .collect();
-
+fn classify_zerg(entries: &[&ProductionEntry]) -> (String, String, Option<String>, f64) {
+    let buildings = structures(entries, true);
     if buildings.is_empty() {
-        return ("Unknown".into(), "unknown".into(), 0.0);
+        return ("Unknown".into(), "unknown".into(), None, 0.0);
     }
 
     let pool_idx = buildings.iter().position(|&b| b == SPAWNING_POOL);
     let hatch_idx = buildings.iter().position(|&b| b == HATCHERY);
-    let has_lair = buildings.contains(&LAIR);
-    let has_hydra = buildings.contains(&HYDRA_DEN);
-    let has_spire = buildings.contains(&SPIRE);
 
-    // Count workers trained before pool to estimate supply timing.
-    let pool_frame = build_order
+    let pool = entries
         .iter()
-        .filter(|e| e.player_id == player_id)
-        .find(|e| matches!(e.action, BuildAction::Build(id) if id == SPAWNING_POOL))
-        .map(|e| e.frame);
+        .find(|e| matches!(e.action, BuildAction::Build(SPAWNING_POOL)));
+    let overlord_before_pool = pool.is_some_and(|p| {
+        entries
+            .iter()
+            .any(|e| e.frame <= p.frame && matches!(e.action, BuildAction::UnitMorph(OVERLORD)))
+    });
 
-    let drones_before_pool = pool_frame
-        .map(|pf| {
-            build_order
-                .iter()
-                .filter(|e| {
-                    e.player_id == player_id
-                        && e.frame < pf
-                        && matches!(e.action, BuildAction::Train(41)) // Drone = 41
-                })
-                .count()
-        })
-        .unwrap_or(0);
-
-    // X Pool naming: approximate supply count from drone count.
-    // Start with 4 drones (+ 1 building overlord at 9), so pool at supply = 4 + drones_before.
-    let pool_supply = 4 + drones_before_pool;
-
-    // 3 Hatch before Pool.
-    if let (Some(pi), Some(hi)) = (pool_idx, hatch_idx)
-        && hi < pi
-    {
-        let hatch_count = buildings[..pi].iter().filter(|&&b| b == HATCHERY).count();
-        if hatch_count >= 2 {
-            return ("3 Hatch Before Pool".into(), "3hatch_pool".into(), 0.85);
+    let (name, tag, confidence) = match (pool_idx, hatch_idx) {
+        // Hatchery first (before pool, or no pool yet in the opening).
+        (pi, Some(hi)) if pi.is_none_or(|pi| hi < pi) => {
+            let before_pool = pi.map_or(&buildings[..], |pi| &buildings[..pi]);
+            if before_pool.iter().filter(|&&b| b == HATCHERY).count() >= 2 {
+                ("3 Hatch Before Pool", "3hatch_pool", 0.85)
+            } else {
+                ("12 Hatch", "12hatch", 0.8)
+            }
         }
-        return ("12 Hatch".into(), "12hatch".into(), 0.8);
+        (Some(_), _) => {
+            let supply = pool.map_or(0, |p| p.supply);
+            match supply {
+                0..=5 => ("4/5 Pool", "4pool", 0.85),
+                6..=10 if overlord_before_pool && supply >= 9 => ("Overpool", "overpool", 0.75),
+                6..=10 => ("9 Pool", "9pool", 0.8),
+                _ => ("12 Pool", "12pool", 0.75),
+            }
+        }
+        _ => return ("Unknown Zerg".into(), "unknown_z".into(), None, 0.3),
+    };
+
+    let follow_up = if buildings.contains(&SPIRE) && !buildings.contains(&HYDRA_DEN) {
+        Some(("Muta", "muta"))
+    } else if buildings.contains(&HYDRA_DEN) {
+        Some(("Hydra", "hydra"))
+    } else if buildings.contains(&LAIR) {
+        Some(("Lair", "lair"))
+    } else {
+        None
+    };
+
+    match follow_up {
+        Some((label, key)) => (
+            format!("{name} → {label}"),
+            tag.to_string(),
+            Some(key.to_string()),
+            confidence,
+        ),
+        None => (name.to_string(), tag.to_string(), None, confidence),
     }
-
-    // Pool timing variants.
-    if pool_idx.is_some() {
-        // Spire rush.
-        if has_spire && !has_hydra {
-            return ("Muta Build".into(), "muta".into(), 0.75);
-        }
-        // Hydra build.
-        if has_hydra {
-            return ("Hydra Build".into(), "hydra".into(), 0.7);
-        }
-        // Lair tech.
-        if has_lair {
-            return ("Lair Tech".into(), "lair_tech".into(), 0.65);
-        }
-
-        if pool_supply <= 5 {
-            return ("4/5 Pool".into(), "4pool".into(), 0.85);
-        }
-        if pool_supply <= 9 {
-            return ("9 Pool".into(), "9pool".into(), 0.8);
-        }
-        if pool_supply <= 12 {
-            return ("12 Pool".into(), "12pool".into(), 0.75);
-        }
-        return ("Overpool".into(), "overpool".into(), 0.65);
-    }
-
-    ("Unknown Zerg".into(), "unknown_z".into(), 0.3)
 }
 
 // ---------------------------------------------------------------------------
 // Protoss classification
 // ---------------------------------------------------------------------------
 
-fn classify_protoss(actions: &[&BuildAction]) -> (String, String, f64) {
-    let buildings: Vec<u16> = actions
-        .iter()
-        .filter_map(|a| match a {
-            BuildAction::Build(id) => Some(*id),
-            _ => None,
-        })
-        .collect();
-
+fn classify_protoss(entries: &[&ProductionEntry]) -> Label {
+    let buildings = structures(entries, false);
     if buildings.is_empty() {
-        return ("Unknown".into(), "unknown".into(), 0.0);
+        return label("Unknown", "unknown", 0.0);
     }
 
     let gate_count = buildings.iter().filter(|&&b| b == GATEWAY).count();
     let has_core = buildings.contains(&CYBERNETICS);
     let has_forge = buildings.contains(&FORGE);
-    let nexus_count = buildings.iter().filter(|&&b| b == NEXUS).count();
+    // The main Nexus is not in the build order: any Nexus is an expansion.
+    let has_nexus = buildings.contains(&NEXUS);
     let has_citadel = buildings.contains(&CITADEL);
     let has_archives = buildings.contains(&TEMPLAR_ARCHIVES);
     let has_stargate = buildings.contains(&STARGATE);
     let has_robo = buildings.contains(&ROBOTICS);
     let has_cannon = buildings.contains(&CANNON);
 
-    let first_non_pylon = buildings
+    let first = buildings
         .iter()
-        .find(|&&b| b != PYLON && b != ASSIMILATOR && b != NEXUS);
+        .copied()
+        .find(|&b| b != PYLON && b != ASSIMILATOR);
 
     // Nexus first.
-    if nexus_count >= 2 && first_non_pylon == Some(&NEXUS) {
-        return ("Nexus First".into(), "nexus_first".into(), 0.8);
+    if first == Some(NEXUS) {
+        return label("Nexus First", "nexus_first", 0.8);
     }
 
     // Forge FE: Forge before Gateway.
@@ -322,187 +342,268 @@ fn classify_protoss(actions: &[&BuildAction]) -> (String, String, f64) {
         && fi < gi
     {
         if has_cannon {
-            return ("Forge FE + Cannon".into(), "forge_fe_cannon".into(), 0.85);
+            return label("Forge FE + Cannon", "forge_fe_cannon", 0.85);
         }
-        return ("Forge FE".into(), "forge_fe".into(), 0.85);
+        return label("Forge FE", "forge_fe", 0.85);
     }
     // Forge without gateway yet.
     if has_forge && gate_count == 0 {
-        return ("Forge FE".into(), "forge_fe".into(), 0.75);
+        return label("Forge FE", "forge_fe", 0.75);
     }
 
     // DT rush: Gateway → Core → Citadel → Archives.
     if has_archives && gate_count >= 1 {
-        return ("DT Rush".into(), "dt_rush".into(), 0.8);
+        return label("DT Rush", "dt_rush", 0.8);
     }
 
-    // 2 Gate: two gateways before Cybernetics Core.
+    // 2 Gate.
     if gate_count >= 2 {
         if has_core {
-            return ("2 Gate Core".into(), "2gate_core".into(), 0.8);
+            return label("2 Gate Core", "2gate_core", 0.8);
         }
-        return ("2 Gate".into(), "2gate".into(), 0.8);
+        return label("2 Gate", "2gate", 0.8);
     }
 
     // 1 Gate variants.
     if gate_count == 1 && has_core {
         if has_stargate {
-            return ("1 Gate Stargate".into(), "1gate_stargate".into(), 0.8);
+            return label("1 Gate Stargate", "1gate_stargate", 0.8);
         }
         if has_robo {
-            return ("1 Gate Robo".into(), "1gate_robo".into(), 0.8);
+            return label("1 Gate Robo", "1gate_robo", 0.8);
         }
         if has_citadel {
-            return ("1 Gate Citadel".into(), "1gate_citadel".into(), 0.75);
+            return label("1 Gate Citadel", "1gate_citadel", 0.75);
         }
-        if nexus_count >= 2 {
-            return ("1 Gate FE".into(), "1gate_fe".into(), 0.8);
+        if has_nexus {
+            return label("1 Gate FE", "1gate_fe", 0.8);
         }
-        return ("1 Gate Core".into(), "1gate_core".into(), 0.7);
+        return label("1 Gate Core", "1gate_core", 0.7);
     }
 
     if gate_count == 1 {
-        return ("Gateway First".into(), "gate_first".into(), 0.5);
+        return label("Gateway First", "gate_first", 0.5);
     }
 
-    ("Unknown Protoss".into(), "unknown_p".into(), 0.3)
+    label("Unknown Protoss", "unknown_p", 0.3)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn bo_entry(frame: u32, pid: u8, action: BuildAction) -> BuildOrderEntry {
-        BuildOrderEntry {
+    const MACHINE_SHOP: u16 = 120;
+
+    fn entry(secs: u32, action: BuildAction, supply: u32) -> ProductionEntry {
+        let frame = (f64::from(secs) * 23.81) as u32;
+        ProductionEntry {
             frame,
-            real_seconds: frame as f64 / 23.81,
-            player_id: pid,
+            real_seconds: f64::from(frame) / 23.81,
+            player_id: 0,
             action,
+            supply,
+            supply_max: 0,
+            count: 1,
+            start_frame: Some(frame),
+            dropped: false,
+            drop_reason: None,
         }
     }
 
-    // -- Terran --
-
-    #[test]
-    fn test_classify_111() {
-        let bo = vec![
-            bo_entry(500, 0, BuildAction::Build(SUPPLY_DEPOT)),
-            bo_entry(800, 0, BuildAction::Build(BARRACKS)),
-            bo_entry(1200, 0, BuildAction::Build(REFINERY)),
-            bo_entry(1800, 0, BuildAction::Build(FACTORY)),
-            bo_entry(2500, 0, BuildAction::Build(STARPORT)),
-        ];
-        let c = classify_opening(&bo, 0, &Race::Terran);
-        assert_eq!(c.tag, "111");
-        assert!(c.confidence > 0.7);
+    fn b(secs: u32, id: u16) -> ProductionEntry {
+        entry(secs, BuildAction::Build(id), 10)
     }
 
+    fn tag(entries: &[ProductionEntry], race: Race) -> String {
+        classify_opening(entries, 0, &race).tag
+    }
+
+    // -- Terran: one test per branch --
+
     #[test]
-    fn test_classify_2rax() {
-        let bo = vec![
-            bo_entry(500, 0, BuildAction::Build(SUPPLY_DEPOT)),
-            bo_entry(800, 0, BuildAction::Build(BARRACKS)),
-            bo_entry(1200, 0, BuildAction::Build(BARRACKS)),
+    fn test_classify_terran_every_branch() {
+        let cases: &[(&[u16], &str)] = &[
+            (&[SUPPLY_DEPOT, COMMAND_CENTER, BARRACKS], "cc_first"),
+            (&[SUPPLY_DEPOT, BARRACKS, BUNKER], "bunker_rush"),
+            (
+                &[SUPPLY_DEPOT, BARRACKS, REFINERY, FACTORY, STARPORT],
+                "111",
+            ),
+            (&[SUPPLY_DEPOT, BARRACKS, BARRACKS], "2rax"),
+            (&[SUPPLY_DEPOT, BARRACKS, BARRACKS, ACADEMY], "2rax_academy"),
+            (&[SUPPLY_DEPOT, BARRACKS, COMMAND_CENTER, BUNKER], "1rax_fe"),
+            (&[SUPPLY_DEPOT, BARRACKS, REFINERY, ACADEMY], "bio"),
+            (
+                &[SUPPLY_DEPOT, BARRACKS, REFINERY, FACTORY, COMMAND_CENTER],
+                "fe_factory",
+            ),
+            (
+                &[SUPPLY_DEPOT, BARRACKS, REFINERY, FACTORY, ACADEMY, STARPORT],
+                "mech",
+            ),
+            (
+                &[SUPPLY_DEPOT, BARRACKS, REFINERY, FACTORY, MACHINE_SHOP],
+                "rax_factory",
+            ),
+            (&[SUPPLY_DEPOT, BARRACKS, REFINERY], "rax_first"),
+            (&[SUPPLY_DEPOT, 122], "unknown_t"), // Engineering Bay first
+            (&[], "unknown"),
         ];
-        let c = classify_opening(&bo, 0, &Race::Terran);
-        assert_eq!(c.tag, "2rax");
+        for (buildings, want) in cases {
+            let bo: Vec<ProductionEntry> = buildings
+                .iter()
+                .enumerate()
+                .map(|(i, &id)| b(30 + i as u32 * 20, id))
+                .collect();
+            assert_eq!(&tag(&bo, Race::Terran), want, "{buildings:?}");
+        }
     }
 
     // -- Zerg --
 
-    #[test]
-    fn test_classify_9pool() {
-        let bo = vec![
-            // 5 drones before pool (start with 4 = supply 9)
-            bo_entry(100, 0, BuildAction::Train(41)),
-            bo_entry(200, 0, BuildAction::Train(41)),
-            bo_entry(300, 0, BuildAction::Train(41)),
-            bo_entry(400, 0, BuildAction::Train(41)),
-            bo_entry(500, 0, BuildAction::Train(41)),
-            bo_entry(600, 0, BuildAction::Build(SPAWNING_POOL)),
-        ];
-        let c = classify_opening(&bo, 0, &Race::Zerg);
-        assert_eq!(c.tag, "9pool");
+    fn zerg(seq: &[(BuildAction, u32)]) -> OpeningClassification {
+        let bo: Vec<ProductionEntry> = seq
+            .iter()
+            .enumerate()
+            .map(|(i, (a, supply))| entry(20 + i as u32 * 10, a.clone(), *supply))
+            .collect();
+        classify_opening(&bo, 0, &Race::Zerg)
     }
 
     #[test]
-    fn test_classify_4pool() {
-        let bo = vec![
-            // 0 drones before pool (supply 4)
-            bo_entry(100, 0, BuildAction::Build(SPAWNING_POOL)),
-        ];
-        let c = classify_opening(&bo, 0, &Race::Zerg);
-        assert_eq!(c.tag, "4pool");
+    fn test_classify_zerg_pool_timings_use_modelled_supply() {
+        use BuildAction::{Build, UnitMorph};
+        let drones = |n: u32| -> Vec<(BuildAction, u32)> {
+            (0..n).map(|i| (UnitMorph(41), 4 + i)).collect()
+        };
+        // Drones are larva morphs; they used to be counted as Train(41) only,
+        // which made every pool a 4/5 pool.
+        let mut s = drones(5);
+        s.push((Build(SPAWNING_POOL), 9));
+        assert_eq!(zerg(&s).tag, "9pool");
+
+        assert_eq!(zerg(&[(Build(SPAWNING_POOL), 4)]).tag, "4pool");
+
+        let mut s = drones(5);
+        s.push((UnitMorph(OVERLORD), 9));
+        s.push((Build(SPAWNING_POOL), 9));
+        let c = zerg(&s);
+        assert_eq!((c.tag.as_str(), c.name.as_str()), ("overpool", "Overpool"));
+
+        let mut s = drones(8);
+        s.push((UnitMorph(OVERLORD), 9));
+        s.push((Build(SPAWNING_POOL), 12));
+        assert_eq!(zerg(&s).tag, "12pool");
     }
 
     #[test]
-    fn test_classify_12hatch() {
-        let bo = vec![
-            bo_entry(100, 0, BuildAction::Train(41)),
-            bo_entry(200, 0, BuildAction::Train(41)),
-            bo_entry(300, 0, BuildAction::Train(41)),
-            bo_entry(400, 0, BuildAction::Build(HATCHERY)),
-            bo_entry(800, 0, BuildAction::Build(SPAWNING_POOL)),
-        ];
-        let c = classify_opening(&bo, 0, &Race::Zerg);
+    fn test_classify_zerg_hatch_first_and_follow_ups() {
+        use BuildAction::{Build, BuildingMorph};
+        let c = zerg(&[(Build(HATCHERY), 12), (Build(SPAWNING_POOL), 11)]);
         assert_eq!(c.tag, "12hatch");
-    }
+        let c = zerg(&[(Build(HATCHERY), 12)]);
+        assert_eq!(c.tag, "12hatch", "hatch with pool after the opening window");
+        let c = zerg(&[
+            (Build(HATCHERY), 12),
+            (Build(HATCHERY), 13),
+            (Build(SPAWNING_POOL), 12),
+        ]);
+        assert_eq!(c.tag, "3hatch_pool");
 
-    // -- Protoss --
+        let c = zerg(&[
+            (Build(SPAWNING_POOL), 12),
+            (BuildingMorph(LAIR), 14),
+            (Build(SPIRE), 16),
+        ]);
+        assert_eq!(c.name, "12 Pool → Muta");
+        assert_eq!(c.tag, "12pool");
+        assert_eq!(c.follow_up.as_deref(), Some("muta"));
+        let c = zerg(&[(Build(SPAWNING_POOL), 9), (Build(HYDRA_DEN), 14)]);
+        assert_eq!(c.name, "9 Pool → Hydra");
+        let c = zerg(&[(Build(HATCHERY), 12), (BuildingMorph(LAIR), 14)]);
+        assert_eq!(c.name, "12 Hatch → Lair");
 
-    #[test]
-    fn test_classify_1gate_core() {
-        let bo = vec![
-            bo_entry(500, 0, BuildAction::Build(PYLON)),
-            bo_entry(800, 0, BuildAction::Build(GATEWAY)),
-            bo_entry(1200, 0, BuildAction::Build(ASSIMILATOR)),
-            bo_entry(1600, 0, BuildAction::Build(CYBERNETICS)),
-        ];
-        let c = classify_opening(&bo, 0, &Race::Protoss);
-        assert_eq!(c.tag, "1gate_core");
-    }
-
-    #[test]
-    fn test_classify_forge_fe() {
-        let bo = vec![
-            bo_entry(500, 0, BuildAction::Build(PYLON)),
-            bo_entry(800, 0, BuildAction::Build(FORGE)),
-            bo_entry(1200, 0, BuildAction::Build(CANNON)),
-            bo_entry(1600, 0, BuildAction::Build(NEXUS)),
-            bo_entry(2000, 0, BuildAction::Build(GATEWAY)),
-        ];
-        let c = classify_opening(&bo, 0, &Race::Protoss);
-        assert!(c.tag.starts_with("forge_fe"));
+        assert_eq!(zerg(&[(Build(149), 9)]).tag, "unknown_z");
+        assert_eq!(zerg(&[]).tag, "unknown");
     }
 
     #[test]
-    fn test_classify_2gate() {
-        let bo = vec![
-            bo_entry(500, 0, BuildAction::Build(PYLON)),
-            bo_entry(800, 0, BuildAction::Build(GATEWAY)),
-            bo_entry(1000, 0, BuildAction::Build(GATEWAY)),
+    fn test_classify_ignores_dropped_and_late_orders() {
+        let mut pool = b(30, SPAWNING_POOL);
+        pool.supply = 4;
+        pool.dropped = true;
+        let mut real_pool = b(60, SPAWNING_POOL);
+        real_pool.supply = 9;
+        let late_hatch = b(300, HATCHERY);
+        let c = classify_opening(&[pool, real_pool, late_hatch], 0, &Race::Zerg);
+        assert_eq!(c.tag, "9pool");
+        assert_eq!(c.actions_analyzed, 1);
+    }
+
+    // -- Protoss: one test per branch --
+
+    #[test]
+    fn test_classify_protoss_every_branch() {
+        let cases: &[(&[u16], &str)] = &[
+            (&[PYLON, NEXUS, FORGE, GATEWAY], "nexus_first"),
+            (&[PYLON, FORGE, CANNON, NEXUS, GATEWAY], "forge_fe_cannon"),
+            (&[PYLON, FORGE, NEXUS, GATEWAY], "forge_fe"),
+            (&[PYLON, FORGE, CANNON], "forge_fe"),
+            (
+                &[PYLON, GATEWAY, CYBERNETICS, CITADEL, TEMPLAR_ARCHIVES],
+                "dt_rush",
+            ),
+            (&[PYLON, GATEWAY, GATEWAY], "2gate"),
+            (&[PYLON, GATEWAY, GATEWAY, CYBERNETICS], "2gate_core"),
+            (&[PYLON, GATEWAY, CYBERNETICS, STARGATE], "1gate_stargate"),
+            (&[PYLON, GATEWAY, CYBERNETICS, ROBOTICS], "1gate_robo"),
+            (&[PYLON, GATEWAY, CYBERNETICS, CITADEL], "1gate_citadel"),
+            (&[PYLON, GATEWAY, CYBERNETICS, NEXUS], "1gate_fe"),
+            (&[PYLON, GATEWAY, ASSIMILATOR, CYBERNETICS], "1gate_core"),
+            (&[PYLON, GATEWAY], "gate_first"),
+            (&[PYLON, ASSIMILATOR], "unknown_p"),
+            (&[], "unknown"),
         ];
-        let c = classify_opening(&bo, 0, &Race::Protoss);
-        assert_eq!(c.tag, "2gate");
+        for (buildings, want) in cases {
+            let bo: Vec<ProductionEntry> = buildings
+                .iter()
+                .enumerate()
+                .map(|(i, &id)| b(30 + i as u32 * 20, id))
+                .collect();
+            assert_eq!(&tag(&bo, Race::Protoss), want, "{buildings:?}");
+        }
     }
 
     // -- General --
 
     #[test]
     fn test_classify_all() {
-        let bo = vec![
-            bo_entry(500, 0, BuildAction::Build(BARRACKS)),
-            bo_entry(600, 1, BuildAction::Build(SPAWNING_POOL)),
-        ];
+        let mut z = b(40, SPAWNING_POOL);
+        z.player_id = 1;
+        let bo = vec![b(30, BARRACKS), z];
         let results = classify_all(&bo, &[(0, Race::Terran), (1, Race::Zerg)]);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].race, "T");
         assert_eq!(results[1].race, "Z");
+        assert_eq!(results[1].player_id, 1);
     }
 
     #[test]
-    fn test_classify_empty() {
-        let c = classify_opening(&[], 0, &Race::Terran);
+    fn test_classify_workers_ignored_for_every_race() {
+        let mut bo: Vec<ProductionEntry> = [BuildAction::Train(7), BuildAction::Train(64)]
+            .into_iter()
+            .chain(std::iter::repeat_n(BuildAction::UnitMorph(41), 30))
+            .map(|a| entry(5, a, 5))
+            .collect();
+        bo.push(b(60, BARRACKS));
+        let c = classify_opening(&bo, 0, &Race::Terran);
+        assert_eq!(c.tag, "rax_first");
+        assert_eq!(c.actions_analyzed, 1);
+    }
+
+    #[test]
+    fn test_classify_unknown_race() {
+        let c = classify_opening(&[b(30, BARRACKS)], 0, &Race::Unknown(9));
         assert_eq!(c.tag, "unknown");
     }
 }
