@@ -478,3 +478,28 @@ fn test_remastered_extra_sections_on_real_replays() {
     let legacy = replay_core::parse(&fixture("centauro_vs_djscan.rep")).unwrap();
     assert!(legacy.extra_sections.tags.is_empty());
 }
+
+#[test]
+fn test_polypoid_cclr_colors_override_header_colors() {
+    // The header color array says purple/yellow/blue/white, but the game was
+    // played with the colours stored in CCLR (brown/blue/lime/green).
+    let replay = replay_core::parse(&fixture("polypoid.rep")).unwrap();
+    let got: Vec<(String, u32, Option<u32>)> = replay
+        .header
+        .players
+        .iter()
+        .map(|p| (p.name.clone(), p.color, p.custom_color))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("Furinax Tribe".to_string(), 5, Some(0x703014)),
+            ("Dada".to_string(), 1, Some(0x0C48CC)),
+            ("Mar Sara".to_string(), 17, Some(0xD2F53C)),
+            ("Shelak Tribe".to_string(), 8, Some(0x088008)),
+        ]
+    );
+    for p in &replay.header.players {
+        assert_eq!(p.color_rgb(), p.custom_color);
+    }
+}

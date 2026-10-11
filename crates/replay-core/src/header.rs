@@ -257,10 +257,52 @@ pub fn apply_extended_names(header: &mut Header, section4: &[u8]) {
     }
 }
 
+/// RGB (`0xRRGGBB`) of the standard and Remastered player colours, indexed by
+/// the colour id stored in the header (0 = red, 1 = blue, ... 21 = black).
+pub const PLAYER_COLOR_RGB: [u32; 22] = [
+    0xF40404, 0x0C48CC, 0x2CB494, 0x88409C, 0xF88C14, 0x703014, 0xCCE0D0, 0xFCFC38, 0x088008,
+    0xFCFC7C, 0xECC4B0, 0x4068D4, 0x74A47C, 0x7290B8, 0x00E4FC, 0xFFC4E4, 0x787800, 0xD2F53C,
+    0x0000E6, 0xF032E6, 0x808080, 0x3C3C3C,
+];
+
+/// Palette index of an RGB colour, allowing for the rounding of the `CCLR`
+/// float channels.
+#[must_use]
+pub fn color_index_of(rgb: u32) -> Option<u32> {
+    let channel = |c: u32, shift: u32| ((c >> shift) & 0xFF) as i32;
+    PLAYER_COLOR_RGB
+        .iter()
+        .position(|&p| {
+            [16, 8, 0]
+                .iter()
+                .all(|&s| (channel(p, s) - channel(rgb, s)).abs() <= 2)
+        })
+        .map(|i| i as u32)
+}
+
+impl Player {
+    /// The colour the player actually had in game, as `0xRRGGBB`: the `CCLR`
+    /// colour when present, otherwise the header palette colour.
+    #[must_use]
+    pub fn color_rgb(&self) -> Option<u32> {
+        self.custom_color
+            .or_else(|| PLAYER_COLOR_RGB.get(self.color as usize).copied())
+    }
+}
+
 /// Apply custom player colours (indexed by slot) from the `CCLR` section.
+///
+/// Remastered writes the colours players actually had in game to `CCLR`; the
+/// header colour array keeps the lobby/map defaults, which differ e.g. in
+/// games against computers or with randomized colours. `CCLR` is therefore
+/// authoritative: when it is present, `color` is replaced by the palette index
+/// of the `CCLR` colour (if it is a palette colour) so both fields agree.
 pub fn apply_custom_colors(header: &mut Header, colors: &[Option<u32>]) {
     for player in &mut header.players {
         player.custom_color = colors.get(player.slot_id as usize).copied().flatten();
+        if let Some(index) = player.custom_color.and_then(color_index_of) {
+            player.color = index;
+        }
     }
 }
 
@@ -452,6 +494,29 @@ mod tests {
         let utf8_bytes = b"Flash\x00extra";
         let result = decode_string(utf8_bytes);
         assert_eq!(result, "Flash");
+    }
+
+    #[test]
+    fn test_apply_custom_colors_overrides_header_color_index() {
+        let data = build_test_header();
+        let mut header = parse_header(&data).unwrap();
+        assert_eq!(header.players[0].color, 0); // red in the header
+        // CCLR: slot 0 brown (rounded float channels), slot 1 a non-palette colour.
+        apply_custom_colors(&mut header, &[Some(0x713014), Some(0x123456)]);
+        assert_eq!(header.players[0].custom_color, Some(0x713014));
+        assert_eq!(header.players[0].color, 5);
+        assert_eq!(header.players[0].color_rgb(), Some(0x713014));
+        // Unknown colour: index left alone, custom colour still wins.
+        assert_eq!(header.players[1].color, 1);
+        assert_eq!(header.players[1].color_rgb(), Some(0x123456));
+    }
+
+    #[test]
+    fn test_color_rgb_without_cclr_uses_palette() {
+        let header = parse_header(&build_test_header()).unwrap();
+        assert_eq!(header.players[1].color_rgb(), Some(0x0C48CC));
+        assert_eq!(color_index_of(0xD2F53C), Some(17));
+        assert_eq!(color_index_of(0x123456), None);
     }
 
     #[test]
