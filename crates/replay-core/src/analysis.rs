@@ -269,6 +269,11 @@ pub fn calculate_apm(commands: &[GameCommand], total_frames: u32) -> Vec<PlayerA
 /// Calculate APM over time in sliding windows for graphing.
 /// `window_frames` controls the window size (e.g., 60 seconds = ~1428 frames).
 /// `step_frames` controls how often to sample (e.g., every 10 seconds = ~238 frames).
+///
+/// Samples are taken at `step, 2*step, ...` up to `total_frames`. Each sample
+/// counts actions in `[frame - window, frame)`; near the start of the game
+/// the window is shorter and the rate is computed over its actual length, so
+/// the curve does not ramp up artificially during the first minute.
 pub fn calculate_apm_over_time(
     commands: &[GameCommand],
     total_frames: u32,
@@ -283,40 +288,42 @@ pub fn calculate_apm_over_time(
     player_ids.sort_unstable();
     player_ids.dedup();
 
-    let window_minutes = frame_to_seconds(window_frames) / 60.0;
-    let mut samples = Vec::new();
+    // Sorted action frames per player, so each window is two binary searches.
+    let frames: Vec<(u8, Vec<u32>, Vec<u32>)> = player_ids
+        .iter()
+        .map(|&pid| {
+            let mut meaningful = Vec::new();
+            let mut effective = Vec::new();
+            for c in commands.iter().filter(|c| c.player_id == pid) {
+                if c.command.is_meaningful_action() {
+                    meaningful.push(c.frame);
+                }
+                if c.command.is_effective_action() {
+                    effective.push(c.frame);
+                }
+            }
+            meaningful.sort_unstable();
+            effective.sort_unstable();
+            (pid, meaningful, effective)
+        })
+        .collect();
+    let count_in = |sorted: &[u32], from: u32, to: u32| {
+        sorted.partition_point(|&f| f < to) - sorted.partition_point(|&f| f < from)
+    };
 
-    let mut frame = 0;
+    let mut samples = Vec::new();
+    let mut frame = step_frames;
     while frame <= total_frames {
         let window_start = frame.saturating_sub(window_frames);
-        let window_end = frame;
+        let minutes = frame_to_seconds(frame - window_start) / 60.0;
 
-        for &pid in &player_ids {
-            let meaningful = commands
-                .iter()
-                .filter(|c| {
-                    c.player_id == pid
-                        && c.frame >= window_start
-                        && c.frame < window_end
-                        && c.command.is_meaningful_action()
-                })
-                .count();
-            let effective = commands
-                .iter()
-                .filter(|c| {
-                    c.player_id == pid
-                        && c.frame >= window_start
-                        && c.frame < window_end
-                        && c.command.is_effective_action()
-                })
-                .count();
-
+        for (pid, meaningful, effective) in &frames {
             samples.push(ApmSample {
                 frame,
                 real_seconds: frame_to_seconds(frame),
-                player_id: pid,
-                apm: meaningful as f64 / window_minutes,
-                eapm: effective as f64 / window_minutes,
+                player_id: *pid,
+                apm: count_in(meaningful, window_start, frame) as f64 / minutes,
+                eapm: count_in(effective, window_start, frame) as f64 / minutes,
             });
         }
 
@@ -558,6 +565,31 @@ mod tests {
         let commands = vec![make_cmd(0, 0, Command::Train { unit_type: 1 })];
         let apms = calculate_apm(&commands, 0);
         assert!(apms.is_empty());
+    }
+
+    #[test]
+    fn test_apm_over_time_partial_window_uses_actual_length() {
+        let fpm = (FPS_FASTEST * 60.0) as u32; // ~1428 frames per minute
+        // One action every 24 frames (~60 APM) for two minutes.
+        let commands: Vec<GameCommand> = (0..2 * fpm / 24)
+            .map(|i| make_cmd(i * 24, 0, Command::Train { unit_type: 7 }))
+            .collect();
+        let samples = calculate_apm_over_time(&commands, 2 * fpm, fpm, fpm / 4);
+        assert_eq!(samples.len(), 8);
+        assert_eq!(samples[0].frame, fpm / 4);
+        // The first sample covers only 15 s but must still read ~60 APM.
+        for s in &samples {
+            assert!((s.apm - 59.5).abs() < 3.0, "{} at frame {}", s.apm, s.frame);
+            assert!((s.eapm - s.apm).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn test_apm_over_time_zero_inputs_empty() {
+        let commands = vec![make_cmd(10, 0, Command::Train { unit_type: 7 })];
+        assert!(calculate_apm_over_time(&commands, 0, 10, 10).is_empty());
+        assert!(calculate_apm_over_time(&commands, 100, 0, 10).is_empty());
+        assert!(calculate_apm_over_time(&commands, 100, 10, 0).is_empty());
     }
 
     #[test]
