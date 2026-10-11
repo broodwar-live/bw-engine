@@ -6,15 +6,22 @@ use crate::format::Format;
 
 /// Reads a little-endian i32 from a byte slice at the given offset.
 fn read_i32(data: &[u8], offset: usize) -> Result<i32> {
-    let bytes: [u8; 4] = data
-        .get(offset..offset + 4)
-        .ok_or(ReplayError::TooShort {
-            expected: offset + 4,
-            actual: data.len(),
-        })?
-        .try_into()
-        .unwrap();
+    let too_short = || ReplayError::TooShort {
+        expected: offset.saturating_add(4),
+        actual: data.len(),
+    };
+    let bytes: [u8; 4] = offset
+        .checked_add(4)
+        .and_then(|end| data.get(offset..end))
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(too_short)?;
     Ok(i32::from_le_bytes(bytes))
+}
+
+/// Reads a little-endian i32 length/count field; negative values are invalid.
+fn read_len(data: &[u8], offset: usize) -> Result<usize> {
+    let v = read_i32(data, offset)?;
+    usize::try_from(v).map_err(|_| ReplayError::InvalidLength { offset, value: v })
 }
 
 /// Decompress a single section from the replay data stream.
@@ -33,24 +40,23 @@ fn read_i32(data: &[u8], offset: usize) -> Result<i32> {
 /// Returns `(decompressed_section_data, bytes_consumed)`.
 pub fn decompress_section(data: &[u8], offset: usize, fmt: Format) -> Result<(Vec<u8>, usize)> {
     let _checksum = read_i32(data, offset)?;
-    let chunk_count = read_i32(data, offset + 4)? as usize;
+    let chunk_count = read_len(data, offset.saturating_add(4))?;
 
-    let mut cursor = offset + 8;
+    let mut cursor = offset.saturating_add(8);
     let mut decompressed = Vec::new();
 
     for _ in 0..chunk_count {
-        let compressed_len = read_i32(data, cursor)? as usize;
+        let compressed_len = read_len(data, cursor)?;
         cursor += 4;
 
-        let chunk_data =
-            data.get(cursor..cursor + compressed_len)
-                .ok_or(ReplayError::TooShort {
-                    expected: cursor + compressed_len,
-                    actual: data.len(),
-                })?;
+        let end = cursor.saturating_add(compressed_len);
+        let chunk_data = data.get(cursor..end).ok_or(ReplayError::TooShort {
+            expected: end,
+            actual: data.len(),
+        })?;
 
         decompress_chunk(chunk_data, fmt, &mut decompressed)?;
-        cursor += compressed_len;
+        cursor = end;
     }
 
     Ok((decompressed, cursor - offset))
@@ -168,6 +174,24 @@ mod tests {
 
         let (result, _) = decompress_section(&data, 16, Format::Modern).unwrap();
         assert_eq!(result, payload);
+    }
+
+    #[test]
+    fn test_decompress_section_negative_length_returns_error() {
+        let mut section = Vec::new();
+        section.extend_from_slice(&0i32.to_le_bytes());
+        section.extend_from_slice(&1i32.to_le_bytes());
+        section.extend_from_slice(&(-5i32).to_le_bytes());
+        let result = decompress_section(&section, 0, Format::Modern);
+        assert!(matches!(
+            result,
+            Err(ReplayError::InvalidLength { value: -5, .. })
+        ));
+    }
+
+    #[test]
+    fn test_decompress_section_offset_past_end_returns_error() {
+        assert!(decompress_section(&[0u8; 4], usize::MAX - 2, Format::Modern).is_err());
     }
 
     #[test]

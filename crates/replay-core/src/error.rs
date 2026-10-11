@@ -14,6 +14,9 @@ pub enum ReplayError {
     #[error("invalid section {index}: {reason}")]
     InvalidSection { index: usize, reason: String },
 
+    #[error("invalid section length {value} at offset {offset}")]
+    InvalidLength { offset: usize, value: i32 },
+
     #[error("invalid header: {0}")]
     InvalidHeader(String),
 }
