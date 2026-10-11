@@ -16,7 +16,7 @@
     <img alt="Rust" src="https://img.shields.io/badge/Rust-1.85+-000000?logo=rust&logoColor=white&style=for-the-badge">
   </a>
   <a href="https://webassembly.org/">
-    <img alt="WASM" src="https://img.shields.io/badge/WebAssembly-367KB-654ff0?logo=webassembly&logoColor=white&style=for-the-badge">
+    <img alt="WASM" src="https://img.shields.io/badge/WebAssembly-293KB_parser-654ff0?logo=webassembly&logoColor=white&style=for-the-badge">
   </a>
   <a href="LICENSE">
     <img alt="License" src="https://img.shields.io/badge/License-MIT-c6a0f6?style=for-the-badge">
@@ -34,6 +34,13 @@
 ---
 
 A Rust workspace that parses StarCraft: Brood War `.rep` files and selectively reimplements the BW game engine for WebAssembly. Built for [broodwar.live](https://broodwar.live), based on the [OpenBW](https://github.com/broodwar-live/openbw) C++ engine.
+
+> [!IMPORTANT]
+> **Project status:** the replay parser (`replay-core`, plus its WASM and NIF
+> bindings) is the priority and is what broodwar.live depends on. The game
+> simulation in `bw-engine` is **experimental and frozen**: it is kept
+> compiling and tested, but is not being extended, and is behind the `sim`
+> cargo feature. See [NOTICE](NOTICE) for its provenance.
 
 **No game data files needed for parsing.** The parser extracts player info, commands, build orders, and APM from any replay. The simulation engine adds movement physics, pathfinding, combat, and fog of war when provided with BW's `.dat` files.
 
@@ -58,7 +65,12 @@ for entry in replay.build_order.iter().take(5) {
 ### Browser
 
 ```sh
+# Full build (parser + map/asset bindings + experimental simulation), ~386 KB
 wasm-pack build crates/replay-wasm --target web --out-dir ../../pkg
+
+# Parser-only build (just parseReplay), ~293 KB
+wasm-pack build crates/replay-wasm --target web --out-dir ../../pkg -- --no-default-features
+
 python3 -m http.server 8000
 # Open http://localhost:8000/demo/index.html
 ```
@@ -104,6 +116,20 @@ The [demo page](demo/index.html) accepts a `.rep` file plus optional game data f
 | Legacy | Pre-1.18 | PKWare DCL Implode |
 | Modern | 1.18 -- 1.20 | zlib |
 | Remastered | 1.21+ | zlib + extended sections |
+
+Remastered extra sections are walked by tag and length: `CCLR` custom player
+colours are exposed as `Player::custom_color`; `SKIN`, `LMTS`, `BFIX`, `GCFG`
+and unknown third-party sections (e.g. ShieldBattery's `Sbat`) are skipped
+safely. Unknown command opcodes skip to the end of their frame block and are
+counted in `Replay::command_warnings` rather than desynchronising the stream.
+
+### Cargo features
+
+| Crate | Feature | Default | Enables |
+|-------|---------|---------|---------|
+| `bw-engine` | `sim` | on | Game loop, units, pathfinding, regions, selection, vision |
+| `replay-wasm` | `map` | via `sim` | `GameMap`, `MpqFile`, `ScxMapFile`, `TblFile`, `GrpFile`, tileset bindings |
+| `replay-wasm` | `sim` | on | `GameSim` (implies `map`) |
 
 ## Crates
 
@@ -180,14 +206,16 @@ Game data files are in your StarCraft installation's `arr/` and `tileset/` direc
 ## Tests
 
 ```sh
-cargo test --workspace    # 289 tests
-cargo test -p bw-engine   # 153 unit + 6 integration (real replay fixtures)
-cargo test -p replay-core # 111 unit + 12 integration + 7 proptest
+cargo test --workspace    # 311 tests
+cargo test -p bw-engine   # 154 unit + 6 integration (real replay fixtures)
+cargo test -p replay-core # 128 unit + 14 integration + 9 proptest
 cargo bench               # criterion benchmarks for parsing + simulation
 ```
 
 Integration tests run the full simulation pipeline against 5 real replay fixtures (modern + legacy formats, up to 53K frames) and validate crash-free execution with 89-95% command translation coverage.
 
+**Fixture gap:** `tests/fixtures/` has Remastered 1.21+ replays (`1v1melee`, `larva_vs_mini`, `polypoid`) and legacy pre-1.18 replays (`centauro_vs_djscan`, `franky_vs_djscan`), but **no 1.18–1.20 zlib replay**. That format path is only covered by synthetic unit tests. Contributions of a freely redistributable 1.18–1.20 replay are welcome.
+
 ## License
 
-MIT
+MIT for code original to this project. Parts of `crates/bw-engine` were derived from OpenBW, which does not publish a licence; see [NOTICE](NOTICE) for provenance and what that means for those files.

@@ -35,6 +35,9 @@
 
 StarCraft: Brood War `.rep` 파일을 파싱하고 WebAssembly용으로 BW 게임 엔진을 선택적으로 재구현한 Rust 워크스페이스입니다. [broodwar.live](https://broodwar.live)를 위해 제작되었으며, [OpenBW](https://github.com/broodwar-live/openbw) C++ 엔진을 기반으로 합니다.
 
+> [!IMPORTANT]
+> **프로젝트 상태:** 리플레이 파서(`replay-core` 및 WASM/NIF 바인딩)가 우선순위입니다. `bw-engine`의 게임 시뮬레이션은 **실험적이며 동결**되어 있고 `sim` cargo 기능 뒤에 있습니다. 파서 전용 WASM은 `--no-default-features`로 빌드합니다. 출처는 [NOTICE](NOTICE)를 참고하세요.
+
 **파싱에는 게임 데이터 파일이 필요하지 않습니다.** 파서는 모든 리플레이에서 플레이어 정보, 커맨드, 빌드 오더, APM을 추출합니다. 시뮬레이션 엔진은 BW의 `.dat` 파일이 제공되면 이동 물리, 경로 탐색, 전투, 전장의 안개를 추가합니다.
 
 ## 빠른 시작
@@ -180,14 +183,16 @@ python3 -m http.server 8000
 ## 테스트
 
 ```sh
-cargo test --workspace    # 289개 테스트
-cargo test -p bw-engine   # 153개 유닛 + 6개 통합 테스트 (실제 리플레이 픽스처)
-cargo test -p replay-core # 111개 유닛 + 12개 통합 + 7개 proptest
+cargo test --workspace    # 311개 테스트
+cargo test -p bw-engine   # 154개 유닛 + 6개 통합 테스트 (실제 리플레이 픽스처)
+cargo test -p replay-core # 128개 유닛 + 14개 통합 + 9개 proptest
 cargo bench               # 파싱 + 시뮬레이션 criterion 벤치마크
 ```
 
 통합 테스트는 5개의 실제 리플레이 픽스처(모던 + 레거시 포맷, 최대 53K 프레임)에 대해 전체 시뮬레이션 파이프라인을 실행하고 89-95% 커맨드 변환 커버리지로 크래시 없는 실행을 검증합니다.
 
+**픽스처 공백:** `tests/fixtures/`에는 1.21+ 및 1.18 이전 리플레이만 있고 1.18–1.20 (zlib) 리플레이는 없습니다. 해당 포맷은 합성 유닛 테스트로만 검증됩니다.
+
 ## 라이선스
 
-MIT
+이 프로젝트 고유의 코드는 MIT입니다. `crates/bw-engine`의 일부는 라이선스가 명시되지 않은 OpenBW에서 파생되었습니다. 자세한 내용은 [NOTICE](NOTICE)를 참고하세요.
