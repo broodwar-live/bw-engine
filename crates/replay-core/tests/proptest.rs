@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 
-/// Parsing arbitrary bytes should never panic — it should return an error.
+// Parsing arbitrary bytes should never panic — it should return an error.
 proptest! {
     #[test]
     fn parse_never_panics(data in proptest::collection::vec(any::<u8>(), 0..2048)) {
@@ -11,6 +11,21 @@ proptest! {
     fn parse_short_inputs_are_errors(data in proptest::collection::vec(any::<u8>(), 0..30)) {
         let result = replay_core::parse(&data);
         prop_assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_commands_never_panics(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
+        let (_, w) = replay_core::command::parse_commands_with_warnings(&data);
+        prop_assert!(w.skipped_bytes as usize <= data.len());
+    }
+
+    #[test]
+    fn parse_extra_sections_never_panics(data in proptest::collection::vec(any::<u8>(), 0..512)) {
+        let _ = replay_core::extra::parse_extra_sections(
+            &data,
+            0,
+            replay_core::format::Format::Modern121,
+        );
     }
 
     #[test]
@@ -56,7 +71,7 @@ proptest! {
         let s_ba = similarity(&seq_b, &seq_a);
 
         prop_assert!((s_ab - s_ba).abs() < 0.001, "similarity not symmetric: {} vs {}", s_ab, s_ba);
-        prop_assert!(s_ab >= 0.0 && s_ab <= 1.0, "similarity out of range: {}", s_ab);
+        prop_assert!((0.0..=1.0).contains(&s_ab), "similarity out of range: {}", s_ab);
     }
 
     #[test]

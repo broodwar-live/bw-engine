@@ -394,7 +394,7 @@ fn test_similarity_on_real_replays() {
 
     // Cross-replay similarity should be between 0 and 1.
     let cross_sim = replay_core::similarity::similarity(&p0_r1, &p0_r2);
-    assert!(cross_sim >= 0.0 && cross_sim <= 1.0);
+    assert!((0.0..=1.0).contains(&cross_sim));
     println!("Self-similarity: {:.3}", self_sim);
     println!("Cross-similarity: {:.3}", cross_sim);
 }
