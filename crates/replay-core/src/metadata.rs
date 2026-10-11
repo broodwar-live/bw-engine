@@ -136,58 +136,139 @@ fn detect_winner(header: &Header, commands: &[GameCommand]) -> GameResult {
     }
 }
 
+/// League/ladder tags that map makers or ladders put around map names
+/// (`"| iCCup | Python"`). Compared case-insensitively against whole words.
+const MAP_TAG_WORDS: &[&str] = &["iccup", "wgt", "wgtour", "bwcl", "kespa"];
+
 /// Normalize a map name for consistent matching across replays.
 ///
-/// - Strips common version suffixes like "(2)", "1.0", "v2.1"
-/// - Trims leading/trailing whitespace
-/// - Collapses multiple spaces
+/// - Strips StarCraft colour/formatting control characters
+/// - Strips league tags like `"| iCCup |"` or `"[iCCup]"`
+/// - Strips a leading player count like `"(2)"`
+/// - Strips version suffixes, separated (`"1.3"`, `"v2.1"`, `"ver 1.2"`) or
+///   attached to the name when they contain a dot (`"Transistor1.2"`)
+/// - Collapses whitespace
+///
+/// The raw name is kept in [`GameMetadata::map_name_raw`].
 ///
 /// Examples:
-/// - "Fighting Spirit 1.3" → "Fighting Spirit"
-/// - "(4)Fighting Spirit" → "Fighting Spirit"
-/// - "Circuit Breaker 1.0" → "Circuit Breaker"
-/// - "  Polypoid  " → "Polypoid"
+/// - "| iCCup | Python 1.3" → "Python"
+/// - "Transistor1.2" → "Transistor"
+/// - "(4)Fighting Spirit 1.3" → "Fighting Spirit"
+/// - "Circuit Breaker v2.1" → "Circuit Breaker"
 pub fn normalize_map_name(name: &str) -> String {
-    let mut s = name.trim().to_string();
+    // Control characters (colour codes) and tag delimiters become spaces.
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '|' | '[' | ']' | '{' | '}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+
+    // Drop league tag words, also when wrapped in parentheses: "(iCCup)".
+    let words: Vec<&str> = cleaned
+        .split_whitespace()
+        .filter(|w| {
+            let bare = w.trim_matches(|c: char| !c.is_alphanumeric());
+            !MAP_TAG_WORDS.iter().any(|t| bare.eq_ignore_ascii_case(t))
+        })
+        .collect();
+    let mut s = words.join(" ");
 
     // Strip leading player count prefix like "(2)", "(4)", "(8)".
     if s.starts_with('(')
         && let Some(end) = s.find(')')
     {
         let inside = &s[1..end];
-        if inside.chars().all(|c| c.is_ascii_digit()) {
+        if !inside.is_empty() && inside.chars().all(|c| c.is_ascii_digit()) {
             s = s[end + 1..].trim_start().to_string();
         }
     }
 
-    // Strip trailing version suffixes: "1.0", "v2.1", "1.3a", etc.
-    // Pattern: optional "v", digits, optional ".digits", optional letter, at end.
+    s = strip_version_suffix(&s);
+    let s = s
+        .trim_matches(|c: char| c.is_whitespace() || matches!(c, '-' | '_' | ':' | '.'))
+        .to_string();
+
+    if s.is_empty() {
+        // Nothing left (e.g. the name was only a tag): fall back to the
+        // cleaned raw name rather than an empty string.
+        return cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    s
+}
+
+/// Remove a trailing version from a map name (see [`normalize_map_name`]).
+fn strip_version_suffix(s: &str) -> String {
     let trimmed = s.trim_end();
-    if let Some(last_space) = trimmed.rfind(' ') {
-        let suffix = &trimmed[last_space + 1..];
+
+    // Separated suffix: "Name 1.3", "Name v2", "Name ver 1.2", "Name_1.3".
+    if let Some(pos) = trimmed.rfind([' ', '_', '-']) {
+        let suffix = &trimmed[pos + 1..];
         if is_version_suffix(suffix) {
-            s = trimmed[..last_space].to_string();
+            let head = trimmed[..pos].trim_end();
+            // "Name ver 1.2": drop a dangling "ver"/"v" word too.
+            let head = head
+                .strip_suffix(" ver")
+                .or_else(|| head.strip_suffix(" Ver"))
+                .or_else(|| head.strip_suffix(" v"))
+                .or_else(|| head.strip_suffix(" V"))
+                .unwrap_or(head);
+            if !head.trim().is_empty() {
+                return head.to_string();
+            }
         }
     }
 
-    // Collapse multiple spaces.
-    while s.contains("  ") {
-        s = s.replace("  ", " ");
+    // Attached suffix: "Transistor1.2", "Polypoidv1.65". Requires a dot so
+    // names that end in a number ("Neo Sylphid2") are left alone.
+    let bytes = trimmed.as_bytes();
+    let mut start = trimmed.len();
+    // Optional trailing letter ("1.3a").
+    if start > 0 && bytes[start - 1].is_ascii_alphabetic() {
+        start -= 1;
+    }
+    let digits_end = start;
+    while start > 0 && (bytes[start - 1].is_ascii_digit() || bytes[start - 1] == b'.') {
+        start -= 1;
+    }
+    let version = &trimmed[start..digits_end];
+    if version.contains('.')
+        && version.starts_with(|c: char| c.is_ascii_digit())
+        && version.ends_with(|c: char| c.is_ascii_digit())
+        && start > 0
+    {
+        let mut head = &trimmed[..start];
+        if let Some(h) = head.strip_suffix(['v', 'V'])
+            && h.ends_with(|c: char| c.is_alphabetic() || c == ' ')
+        {
+            head = h;
+        }
+        if head.ends_with(|c: char| c.is_alphabetic()) {
+            return head.to_string();
+        }
     }
 
-    s.trim().to_string()
+    trimmed.to_string()
 }
 
-/// Check if a string looks like a version suffix.
+/// Check if a string looks like a version suffix ("1.3", "v2.1", "ver1.2",
+/// "1.3a", "2").
 fn is_version_suffix(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }
 
-    let s = s
-        .strip_prefix('v')
-        .or_else(|| s.strip_prefix('V'))
-        .unwrap_or(s);
+    let lower = s.to_ascii_lowercase();
+    let s = lower
+        .strip_prefix("ver.")
+        .or_else(|| lower.strip_prefix("ver"))
+        .or_else(|| lower.strip_prefix('v'))
+        .unwrap_or(&lower);
 
     if s.is_empty() {
         return false;
@@ -338,6 +419,49 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_map_name_table() {
+        let cases: &[(&str, &str)] = &[
+            // League tags.
+            ("| iCCup | Python 1.3", "Python"),
+            ("| iCCup | Python", "Python"),
+            ("|iCCup| Fighting Spirit", "Fighting Spirit"),
+            ("[iCCup] Destination 1.1", "Destination"),
+            ("Python (iCCup)", "Python"),
+            ("iCCup Python 1.3", "Python"),
+            ("| WGT | Circuit Breaker", "Circuit Breaker"),
+            ("| iCCup | (4)Python 1.3", "Python"),
+            // Attached version suffixes.
+            ("Transistor1.2", "Transistor"),
+            ("Polypoid1.65", "Polypoid"),
+            ("Eclipse1.2a", "Eclipse"),
+            ("Overwatchv1.1", "Overwatch"),
+            // Separated version suffixes.
+            ("Polypoid 1.65", "Polypoid"),
+            ("Fighting Spirit 1.3", "Fighting Spirit"),
+            ("Circuit Breaker v2.1", "Circuit Breaker"),
+            ("Circuit Breaker ver 1.2", "Circuit Breaker"),
+            ("Circuit Breaker ver1.2", "Circuit Breaker"),
+            ("Match Point_1.3", "Match Point"),
+            ("투혼 1.3", "투혼"),
+            // StarCraft colour / control codes.
+            ("\u{3}Fighting \u{6}Spirit\u{1}", "Fighting Spirit"),
+            ("\u{4}| iCCup | \u{3}Python\u{1} 1.3", "Python"),
+            // Must not change.
+            ("Neo Sylphid2", "Neo Sylphid2"),
+            ("Destination SE", "Destination SE"),
+            ("Road War", "Road War"),
+            ("Blue Storm", "Blue Storm"),
+            ("8bit", "8bit"),
+            ("1.3", "1.3"),
+            ("iCCup", "iCCup"),
+            ("", ""),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(&normalize_map_name(raw), want, "raw: {raw:?}");
+        }
+    }
+
+    #[test]
     fn test_normalize_single_digit() {
         assert_eq!(normalize_map_name("Heartbreak Ridge 2"), "Heartbreak Ridge");
     }
@@ -437,6 +561,7 @@ mod tests {
         }];
 
         let meta = extract_metadata(&header, &commands);
+        assert_eq!(meta.map_name_raw, "(4)Fighting Spirit 1.3");
         assert_eq!(meta.matchup.as_ref().unwrap().code, "TvZ");
         assert_eq!(meta.map_name, "Fighting Spirit");
         assert!(meta.is_1v1);

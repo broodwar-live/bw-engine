@@ -503,3 +503,19 @@ fn test_polypoid_cclr_colors_override_header_colors() {
         assert_eq!(p.color_rgb(), p.custom_color);
     }
 }
+
+#[test]
+fn test_map_names_normalized_on_fixtures() {
+    let cases = [
+        ("franky_vs_djscan.rep", "| iCCup | Python 1.3", "Python"),
+        ("centauro_vs_djscan.rep", "| iCCup | Python 1.3", "Python"),
+        ("larva_vs_mini.rep", "Transistor1.2", "Transistor"),
+        ("polypoid.rep", "Polypoid 1.65", "Polypoid"),
+        ("1v1melee.rep", "Road War", "Road War"),
+    ];
+    for (file, raw, normalized) in cases {
+        let replay = replay_core::parse(&fixture(file)).unwrap();
+        assert_eq!(replay.metadata.map_name_raw, raw, "{file}");
+        assert_eq!(replay.metadata.map_name, normalized, "{file}");
+    }
+}
