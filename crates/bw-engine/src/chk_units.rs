@@ -31,9 +31,10 @@ pub fn parse_chk_units(sections: &[ChkSection<'_>]) -> Result<Vec<ChkUnit>> {
         return Ok(Vec::new()); // No UNIT section — no preplaced units.
     };
 
-    let units = data
-        .chunks_exact(UNIT_ENTRY_SIZE)
-        .filter_map(parse_unit_entry)
+    let (entries, _) = data.as_chunks::<UNIT_ENTRY_SIZE>();
+    let units = entries
+        .iter()
+        .filter_map(|e| parse_unit_entry(e))
         // Skip invalid entries (unit_type 0xFFFF) and out-of-range types.
         .filter(|u| u.unit_type != 0xFFFF && u.unit_type < 228)
         .collect();
@@ -78,8 +79,10 @@ pub fn parse_start_locations(sections: &[ChkSection<'_>]) -> Vec<(u8, u16, u16)>
         return Vec::new();
     };
 
-    data.chunks_exact(UNIT_ENTRY_SIZE)
-        .filter_map(parse_unit_entry)
+    let (entries, _) = data.as_chunks::<UNIT_ENTRY_SIZE>();
+    entries
+        .iter()
+        .filter_map(|e| parse_unit_entry(e))
         .filter(|u| u.unit_type == START_LOCATION)
         .map(|u| (u.owner, u.x, u.y))
         .collect()
