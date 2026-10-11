@@ -3,7 +3,9 @@ name = "bw-engine"
 version = "0.1.0"
 description = "StarCraft: Brood War engine reimplementation for WASM"
 edition.workspace = true
-license.workspace = true
+# Not MIT: parts are derived from OpenBW, which publishes no license. See NOTICE.
+license-file = "../../NOTICE"
+publish = false
 repository.workspace = true
 
 [dependencies]

@@ -195,4 +195,4 @@ cargo bench               # 파싱 + 시뮬레이션 criterion 벤치마크
 
 ## 라이선스
 
-이 프로젝트 고유의 코드는 MIT입니다. `crates/bw-engine`의 일부는 라이선스가 명시되지 않은 OpenBW에서 파생되었습니다. 자세한 내용은 [NOTICE](NOTICE)를 참고하세요.
+`crates/bw-engine`을 제외한 모든 코드는 [MIT](LICENSE)입니다. `crates/bw-engine`은 MIT가 **아닙니다**. 일부가 라이선스를 공개하지 않은 OpenBW에서 파생되었기 때문에 이 크레이트에는 라이선스를 부여하지 않습니다([NOTICE](NOTICE) 참고). 리플레이 파서(`replay-core`), 파서 전용 WASM 빌드(`replay-wasm --no-default-features`), `replay-nif`에는 포함되지 않습니다.
