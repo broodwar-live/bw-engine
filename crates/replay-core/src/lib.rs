@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod classify;
 pub mod command;
 pub mod error;
+pub mod extra;
 pub mod format;
 pub mod gamedata;
 pub mod header;
@@ -36,6 +37,9 @@ pub struct Replay {
     pub timeline: Vec<TimelineSnapshot>,
     /// High-level game metadata: matchup, normalized map name, winner.
     pub metadata: GameMetadata,
+    /// Remastered extra sections (`SKIN`, `LMTS`, `BFIX`, `CCLR`, `GCFG`, ...).
+    /// Empty for pre-Remastered replays.
+    pub extra_sections: extra::ExtraSections,
     /// Raw CHK map data (decompressed section 3). Can be fed to `bw_engine::Map::from_chk`.
     pub map_data: Vec<u8>,
 }
@@ -104,16 +108,19 @@ pub fn parse(data: &[u8]) -> Result<Replay> {
     let (map_data, consumed3) = section::decompress_section(data, offset, fmt)?;
     offset += consumed3;
 
-    // Skip size-marker between map data and player names.
-    if offset < data.len() {
-        offset += skip_section(data, offset, fmt)?;
-    }
-
-    // Section 4: Extended player names (768 bytes).
-    if offset < data.len()
-        && let Ok((section4, _)) = section::decompress_section(data, offset, fmt)
+    // Section 4: Extended player names (12 x 96 bytes), present in 1.18+.
+    // Unlike commands and map data it has no size-marker section before it.
+    let mut extra_sections = extra::ExtraSections::default();
+    if fmt != Format::Legacy
+        && offset < data.len()
+        && let Ok((section4, consumed4)) = section::decompress_section(data, offset, fmt)
     {
         header::apply_extended_names(&mut hdr, &section4);
+        offset += consumed4;
+
+        // Remastered extra sections (tagged, length-prefixed). Optional.
+        extra_sections = extra::parse_extra_sections(data, offset, fmt);
+        header::apply_custom_colors(&mut hdr, &extra_sections.player_colors);
     }
 
     // Derive analytics.
@@ -135,6 +142,7 @@ pub fn parse(data: &[u8]) -> Result<Replay> {
         player_apm,
         timeline: tl,
         metadata: meta,
+        extra_sections,
         map_data,
     })
 }
@@ -153,7 +161,7 @@ fn validate_magic(section0: &[u8]) -> Result<()> {
         });
     }
 
-    let magic: [u8; 4] = section0[..4].try_into().unwrap();
+    let magic = [section0[0], section0[1], section0[2], section0[3]];
     if &magic != format::MAGIC_MODERN && &magic != format::MAGIC_LEGACY {
         return Err(ReplayError::InvalidMagic(magic));
     }

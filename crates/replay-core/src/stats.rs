@@ -332,6 +332,7 @@ mod tests {
                 team: 0,
                 name: "Player0".to_string(),
                 color: 0,
+                custom_color: None,
             },
             Player {
                 slot_id: 1,
@@ -341,6 +342,7 @@ mod tests {
                 team: 1,
                 name: "Player1".to_string(),
                 color: 1,
+                custom_color: None,
             },
         ];
         let header = Header {
@@ -372,6 +374,7 @@ mod tests {
             player_apm: vec![],
             timeline: vec![],
             metadata: meta,
+            extra_sections: Default::default(),
             map_data: vec![],
         }
     }

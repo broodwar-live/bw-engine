@@ -229,6 +229,7 @@ mod tests {
             team: id,
             name: name.to_string(),
             color: 0,
+            custom_color: None,
         }
     }
 

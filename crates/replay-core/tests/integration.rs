@@ -456,3 +456,25 @@ fn test_command_stream_all_fixtures_parse_without_warnings() {
         assert!(!replay.commands.is_empty(), "{name}: no commands");
     }
 }
+
+#[test]
+fn test_remastered_extra_sections_on_real_replays() {
+    let poly = replay_core::parse(&fixture("polypoid.rep")).unwrap();
+    assert_eq!(
+        poly.extra_sections.tags,
+        vec!["SKIN", "LMTS", "BFIX", "CCLR", "GCFG"]
+    );
+    assert!(!poly.extra_sections.truncated);
+    // polypoid.rep uses custom colours; slot 0 is brown (0x703014 in SC:R).
+    assert_eq!(poly.extra_sections.player_colors[0], Some(0x703014));
+    assert!(poly.header.players.iter().any(|p| p.custom_color.is_some()));
+
+    // Older 1.21 replay with only SKIN + LMTS, and no custom colours.
+    let larva = replay_core::parse(&fixture("larva_vs_mini.rep")).unwrap();
+    assert_eq!(larva.extra_sections.tags, vec!["SKIN", "LMTS"]);
+    assert!(larva.extra_sections.player_colors.is_empty());
+
+    // Legacy replays have none.
+    let legacy = replay_core::parse(&fixture("centauro_vs_djscan.rep")).unwrap();
+    assert!(legacy.extra_sections.tags.is_empty());
+}
