@@ -96,6 +96,12 @@ mod atoms {
         team,
         name,
         color,
+        custom_color,
+        command_warnings,
+        unknown_commands,
+        truncated_commands,
+        skipped_bytes,
+        unknown_opcodes,
         frame,
         real_seconds,
         action,
@@ -199,7 +205,7 @@ mod atoms {
 fn parse_replay<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Term<'a>> {
     match replay_core::parse(data.as_slice()) {
         Ok(replay) => {
-            let map = encode_replay(env, &replay);
+            let map = encode_replay(env, &replay)?;
             Ok((atoms::ok(), map).encode(env))
         }
         Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
@@ -217,7 +223,7 @@ fn parse_replay<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Term<'a>> 
 fn parse_header<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Term<'a>> {
     match replay_core::parse(data.as_slice()) {
         Ok(replay) => {
-            let map = encode_header(env, &replay.header);
+            let map = encode_header(env, &replay.header)?;
             Ok((atoms::ok(), map).encode(env))
         }
         Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
@@ -235,7 +241,7 @@ fn parse_header<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Term<'a>> 
 fn extract_build_order<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Term<'a>> {
     match replay_core::parse(data.as_slice()) {
         Ok(replay) => {
-            let list = encode_build_order(env, &replay.build_order);
+            let list = encode_build_order(env, &replay.build_order)?;
             Ok((atoms::ok(), list).encode(env))
         }
         Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
@@ -253,7 +259,7 @@ fn extract_build_order<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Ter
 fn calculate_apm<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Term<'a>> {
     match replay_core::parse(data.as_slice()) {
         Ok(replay) => {
-            let list = encode_player_apm(env, &replay.player_apm);
+            let list = encode_player_apm(env, &replay.player_apm)?;
             Ok((atoms::ok(), list).encode(env))
         }
         Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
@@ -277,7 +283,7 @@ fn apm_over_time<'a>(
     match replay_core::parse(data.as_slice()) {
         Ok(replay) => {
             let samples = replay.apm_over_time(window_secs, step_secs);
-            let list = encode_apm_samples(env, &samples);
+            let list = encode_apm_samples(env, &samples)?;
             Ok((atoms::ok(), list).encode(env))
         }
         Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
@@ -297,7 +303,7 @@ fn detect_phases<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Term<'a>>
         Ok(replay) => {
             let analysis =
                 replay_core::phases::detect_phases(&replay.build_order, replay.header.frame_count);
-            let map = encode_phase_analysis(env, &analysis);
+            let map = encode_phase_analysis(env, &analysis)?;
             Ok((atoms::ok(), map).encode(env))
         }
         Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
@@ -322,7 +328,7 @@ fn estimate_skill<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Term<'a>
                 &samples,
                 replay.header.frame_count,
             );
-            let list = encode_skill_profiles(env, &profiles);
+            let list = encode_skill_profiles(env, &profiles)?;
             Ok((atoms::ok(), list).encode(env))
         }
         Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
@@ -381,8 +387,7 @@ fn compare_build_orders<'a>(
                     (atoms::len_a().encode(env), result.len_a.encode(env)),
                     (atoms::len_b().encode(env), result.len_b.encode(env)),
                 ],
-            )
-            .unwrap();
+            )?;
             Ok((atoms::ok(), map).encode(env))
         }
         (Err(e), _) | (_, Err(e)) => Ok((atoms::error(), e.to_string()).encode(env)),
@@ -407,7 +412,7 @@ fn classify_opening<'a>(env: Env<'a>, data: rustler::Binary) -> NifResult<Term<'
                 .map(|p| (p.player_id, p.race))
                 .collect();
             let results = replay_core::classify::classify_all(&replay.build_order, &players);
-            let list = encode_classifications(env, &results);
+            let list = encode_classifications(env, &results)?;
             Ok((atoms::ok(), list).encode(env))
         }
         Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
@@ -442,8 +447,7 @@ fn normalize_player_name<'a>(env: Env<'a>, name: &str) -> NifResult<Term<'a>> {
             ),
             (atoms::clan_tag().encode(env), clan),
         ],
-    )
-    .unwrap();
+    )?;
     Ok(map)
 }
 
@@ -451,14 +455,36 @@ fn normalize_player_name<'a>(env: Env<'a>, name: &str) -> NifResult<Term<'a>> {
 // Encoding helpers — Rust types → Elixir maps/lists
 // ---------------------------------------------------------------------------
 
-fn encode_replay<'a>(env: Env<'a>, replay: &replay_core::Replay) -> Term<'a> {
-    let header = encode_header(env, &replay.header);
-    let build_order = encode_build_order(env, &replay.build_order);
-    let player_apm = encode_player_apm(env, &replay.player_apm);
-    let timeline = encode_timeline(env, &replay.timeline);
-    let meta = encode_metadata(env, &replay.metadata);
+fn encode_replay<'a>(env: Env<'a>, replay: &replay_core::Replay) -> NifResult<Term<'a>> {
+    let header = encode_header(env, &replay.header)?;
+    let build_order = encode_build_order(env, &replay.build_order)?;
+    let player_apm = encode_player_apm(env, &replay.player_apm)?;
+    let timeline = encode_timeline(env, &replay.timeline)?;
+    let meta = encode_metadata(env, &replay.metadata)?;
     let command_count = replay.commands.len();
     let map_data = replay.map_data.as_slice().encode(env);
+    let w = &replay.command_warnings;
+    let command_warnings = Term::map_from_pairs(
+        env,
+        &[
+            (
+                atoms::unknown_commands().encode(env),
+                w.unknown_commands.encode(env),
+            ),
+            (
+                atoms::truncated_commands().encode(env),
+                w.truncated_commands.encode(env),
+            ),
+            (
+                atoms::skipped_bytes().encode(env),
+                w.skipped_bytes.encode(env),
+            ),
+            (
+                atoms::unknown_opcodes().encode(env),
+                w.unknown_opcodes.encode(env),
+            ),
+        ],
+    )?;
 
     Term::map_from_pairs(
         env,
@@ -472,13 +498,13 @@ fn encode_replay<'a>(env: Env<'a>, replay: &replay_core::Replay) -> Term<'a> {
                 atoms::command_count().encode(env),
                 command_count.encode(env),
             ),
+            (atoms::command_warnings().encode(env), command_warnings),
             (atoms::map_data().encode(env), map_data),
         ],
     )
-    .unwrap()
 }
 
-fn encode_header<'a>(env: Env<'a>, header: &replay_core::header::Header) -> Term<'a> {
+fn encode_header<'a>(env: Env<'a>, header: &replay_core::header::Header) -> NifResult<Term<'a>> {
     use replay_core::header::*;
 
     let engine_atom = match header.engine {
@@ -492,7 +518,7 @@ fn encode_header<'a>(env: Env<'a>, header: &replay_core::header::Header) -> Term
         .players
         .iter()
         .map(|p| encode_player(env, p))
-        .collect();
+        .collect::<NifResult<_>>()?;
 
     Term::map_from_pairs(
         env,
@@ -532,10 +558,9 @@ fn encode_header<'a>(env: Env<'a>, header: &replay_core::header::Header) -> Term
             (atoms::players().encode(env), players_list.encode(env)),
         ],
     )
-    .unwrap()
 }
 
-fn encode_player<'a>(env: Env<'a>, player: &replay_core::header::Player) -> Term<'a> {
+fn encode_player<'a>(env: Env<'a>, player: &replay_core::header::Player) -> NifResult<Term<'a>> {
     use replay_core::header::*;
 
     let race_atom = match player.race {
@@ -571,9 +596,15 @@ fn encode_player<'a>(env: Env<'a>, player: &replay_core::header::Player) -> Term
             (atoms::team().encode(env), player.team.encode(env)),
             (atoms::name().encode(env), player.name.as_str().encode(env)),
             (atoms::color().encode(env), player.color.encode(env)),
+            (
+                atoms::custom_color().encode(env),
+                player
+                    .custom_color
+                    .map(|c| c.encode(env))
+                    .unwrap_or_else(|| rustler::types::atom::nil().encode(env)),
+            ),
         ],
     )
-    .unwrap()
 }
 
 fn encode_speed<'a>(env: Env<'a>, speed: &replay_core::header::Speed) -> Term<'a> {
@@ -593,7 +624,7 @@ fn encode_speed<'a>(env: Env<'a>, speed: &replay_core::header::Speed) -> Term<'a
 fn encode_build_order<'a>(
     env: Env<'a>,
     entries: &[replay_core::analysis::BuildOrderEntry],
-) -> Term<'a> {
+) -> NifResult<Term<'a>> {
     let list: Vec<Term<'a>> = entries
         .iter()
         .map(|entry| {
@@ -611,10 +642,9 @@ fn encode_build_order<'a>(
                     (atoms::name().encode(env), entry.action.name().encode(env)),
                 ],
             )
-            .unwrap()
         })
-        .collect();
-    list.encode(env)
+        .collect::<NifResult<_>>()?;
+    Ok(list.encode(env))
 }
 
 fn encode_build_action<'a>(env: Env<'a>, action: &replay_core::analysis::BuildAction) -> Term<'a> {
@@ -630,7 +660,10 @@ fn encode_build_action<'a>(env: Env<'a>, action: &replay_core::analysis::BuildAc
     }
 }
 
-fn encode_player_apm<'a>(env: Env<'a>, apms: &[replay_core::analysis::PlayerApm]) -> Term<'a> {
+fn encode_player_apm<'a>(
+    env: Env<'a>,
+    apms: &[replay_core::analysis::PlayerApm],
+) -> NifResult<Term<'a>> {
     let list: Vec<Term<'a>> = apms
         .iter()
         .map(|a| {
@@ -642,13 +675,15 @@ fn encode_player_apm<'a>(env: Env<'a>, apms: &[replay_core::analysis::PlayerApm]
                     (atoms::eapm().encode(env), a.eapm.encode(env)),
                 ],
             )
-            .unwrap()
         })
-        .collect();
-    list.encode(env)
+        .collect::<NifResult<_>>()?;
+    Ok(list.encode(env))
 }
 
-fn encode_apm_samples<'a>(env: Env<'a>, samples: &[replay_core::analysis::ApmSample]) -> Term<'a> {
+fn encode_apm_samples<'a>(
+    env: Env<'a>,
+    samples: &[replay_core::analysis::ApmSample],
+) -> NifResult<Term<'a>> {
     let list: Vec<Term<'a>> = samples
         .iter()
         .map(|s| {
@@ -665,16 +700,15 @@ fn encode_apm_samples<'a>(env: Env<'a>, samples: &[replay_core::analysis::ApmSam
                     (atoms::eapm().encode(env), s.eapm.encode(env)),
                 ],
             )
-            .unwrap()
         })
-        .collect();
-    list.encode(env)
+        .collect::<NifResult<_>>()?;
+    Ok(list.encode(env))
 }
 
 fn encode_timeline<'a>(
     env: Env<'a>,
     snapshots: &[replay_core::timeline::TimelineSnapshot],
-) -> Term<'a> {
+) -> NifResult<Term<'a>> {
     let list: Vec<Term<'a>> = snapshots
         .iter()
         .map(|snap| {
@@ -682,7 +716,7 @@ fn encode_timeline<'a>(
                 .players
                 .iter()
                 .map(|ps| encode_player_state(env, ps))
-                .collect();
+                .collect::<NifResult<_>>()?;
 
             Term::map_from_pairs(
                 env,
@@ -695,13 +729,15 @@ fn encode_timeline<'a>(
                     (atoms::players().encode(env), player_states.encode(env)),
                 ],
             )
-            .unwrap()
         })
-        .collect();
-    list.encode(env)
+        .collect::<NifResult<_>>()?;
+    Ok(list.encode(env))
 }
 
-fn encode_player_state<'a>(env: Env<'a>, state: &replay_core::timeline::PlayerState) -> Term<'a> {
+fn encode_player_state<'a>(
+    env: Env<'a>,
+    state: &replay_core::timeline::PlayerState,
+) -> NifResult<Term<'a>> {
     // Convert BTreeMaps to lists of {key, value} tuples for Elixir.
     let units_list: Vec<(u16, u32)> = state.units.iter().map(|(&k, &v)| (k, v)).collect();
     let buildings_list: Vec<(u16, u32)> = state.buildings.iter().map(|(&k, &v)| (k, v)).collect();
@@ -733,14 +769,16 @@ fn encode_player_state<'a>(env: Env<'a>, state: &replay_core::timeline::PlayerSt
             (atoms::upgrades().encode(env), upgrades_list.encode(env)),
         ],
     )
-    .unwrap()
 }
 
 // ---------------------------------------------------------------------------
 // Metadata encoding
 // ---------------------------------------------------------------------------
 
-fn encode_metadata<'a>(env: Env<'a>, meta: &replay_core::metadata::GameMetadata) -> Term<'a> {
+fn encode_metadata<'a>(
+    env: Env<'a>,
+    meta: &replay_core::metadata::GameMetadata,
+) -> NifResult<Term<'a>> {
     use replay_core::metadata::GameResult;
 
     let matchup_term = match &meta.matchup {
@@ -750,8 +788,7 @@ fn encode_metadata<'a>(env: Env<'a>, meta: &replay_core::metadata::GameMetadata)
                 (atoms::code().encode(env), m.code.as_str().encode(env)),
                 (atoms::mirror().encode(env), m.mirror.encode(env)),
             ],
-        )
-        .unwrap(),
+        )?,
         None => rustler::types::atom::nil().encode(env),
     };
 
@@ -769,8 +806,7 @@ fn encode_metadata<'a>(env: Env<'a>, meta: &replay_core::metadata::GameMetadata)
                     player_name.as_str().encode(env),
                 ),
             ],
-        )
-        .unwrap(),
+        )?,
         GameResult::Unknown => atoms::unknown().encode(env),
     };
 
@@ -798,7 +834,6 @@ fn encode_metadata<'a>(env: Env<'a>, meta: &replay_core::metadata::GameMetadata)
             ),
         ],
     )
-    .unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -808,7 +843,7 @@ fn encode_metadata<'a>(env: Env<'a>, meta: &replay_core::metadata::GameMetadata)
 fn encode_phase_analysis<'a>(
     env: Env<'a>,
     analysis: &replay_core::phases::PhaseAnalysis,
-) -> Term<'a> {
+) -> NifResult<Term<'a>> {
     let phases_list: Vec<Term<'a>> = analysis
         .phases
         .iter()
@@ -840,9 +875,8 @@ fn encode_phase_analysis<'a>(
                     (atoms::end_seconds().encode(env), end_s),
                 ],
             )
-            .unwrap()
         })
-        .collect();
+        .collect::<NifResult<_>>()?;
 
     let lm = &analysis.landmarks;
     let nil = || rustler::types::atom::nil().encode(env);
@@ -860,8 +894,7 @@ fn encode_phase_analysis<'a>(
                 opt_u32(lm.first_expansion),
             ),
         ],
-    )
-    .unwrap();
+    )?;
 
     Term::map_from_pairs(
         env,
@@ -870,7 +903,6 @@ fn encode_phase_analysis<'a>(
             (atoms::landmarks().encode(env), landmarks_map),
         ],
     )
-    .unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -880,7 +912,7 @@ fn encode_phase_analysis<'a>(
 fn encode_skill_profiles<'a>(
     env: Env<'a>,
     profiles: &[replay_core::skill::SkillProfile],
-) -> Term<'a> {
+) -> NifResult<Term<'a>> {
     let list: Vec<Term<'a>> = profiles
         .iter()
         .map(|p| {
@@ -920,10 +952,9 @@ fn encode_skill_profiles<'a>(
                     (atoms::tier().encode(env), tier_atom),
                 ],
             )
-            .unwrap()
         })
-        .collect();
-    list.encode(env)
+        .collect::<NifResult<_>>()?;
+    Ok(list.encode(env))
 }
 
 // ---------------------------------------------------------------------------
@@ -933,7 +964,7 @@ fn encode_skill_profiles<'a>(
 fn encode_classifications<'a>(
     env: Env<'a>,
     results: &[replay_core::classify::OpeningClassification],
-) -> Term<'a> {
+) -> NifResult<Term<'a>> {
     let list: Vec<Term<'a>> = results
         .iter()
         .map(|c| {
@@ -950,10 +981,9 @@ fn encode_classifications<'a>(
                     ),
                 ],
             )
-            .unwrap()
         })
-        .collect();
-    list.encode(env)
+        .collect::<NifResult<_>>()?;
+    Ok(list.encode(env))
 }
 
 // ---------------------------------------------------------------------------
