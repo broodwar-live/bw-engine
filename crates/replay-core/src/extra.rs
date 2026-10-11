@@ -68,7 +68,9 @@ pub fn parse_extra_sections(data: &[u8], mut offset: usize, fmt: Format) -> Extr
 /// Decode the `CCLR` table into `0xRRGGBB` values. An all-zero entry means the
 /// slot has no custom colour.
 fn parse_cclr(data: &[u8]) -> Vec<Option<u32>> {
-    data.chunks_exact(CCLR_ENTRY_SIZE)
+    let (entries, _) = data.as_chunks::<CCLR_ENTRY_SIZE>();
+    entries
+        .iter()
         .take(CCLR_SLOTS)
         .map(|entry| {
             if entry.iter().all(|&b| b == 0) {
