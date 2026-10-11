@@ -69,12 +69,7 @@ impl Replay {
 /// - Modern (1.18–1.20): zlib compressed
 /// - Modern 1.21+ (Remastered): zlib compressed with extra post-magic gap
 pub fn parse(data: &[u8]) -> Result<Replay> {
-    if data.len() < 30 {
-        return Err(ReplayError::TooShort {
-            expected: 30,
-            actual: data.len(),
-        });
-    }
+    check_replay_id(data)?;
 
     let fmt = format::detect(data);
 
@@ -153,29 +148,91 @@ fn skip_section(data: &[u8], offset: usize, fmt: Format) -> Result<usize> {
     Ok(consumed)
 }
 
-fn validate_magic(section0: &[u8]) -> Result<()> {
-    if section0.len() < 4 {
-        return Err(ReplayError::TooShort {
-            expected: 4,
-            actual: section0.len(),
+/// Offset of the raw replay identifier: section 0 is a single 4-byte chunk,
+/// which is too small to be compressed, so the magic is stored verbatim after
+/// the checksum, chunk count and chunk length fields.
+const RAW_MAGIC_OFFSET: usize = 12;
+/// Smallest input that can hold section 0 plus the start of the header
+/// section's envelope.
+const MIN_REPLAY_LEN: usize = 30;
+
+/// Cheap up-front check that `data` is a replay at all, so arbitrary files are
+/// rejected with [`ReplayError::NotAReplay`] instead of a confusing section
+/// decoding error.
+fn check_replay_id(data: &[u8]) -> Result<()> {
+    let Some(magic) = data.get(RAW_MAGIC_OFFSET..RAW_MAGIC_OFFSET + 4) else {
+        return Err(ReplayError::NotAReplay("file is too small"));
+    };
+    if magic != format::MAGIC_MODERN && magic != format::MAGIC_LEGACY {
+        return Err(ReplayError::NotAReplay("missing replay identifier"));
+    }
+    if data.len() < MIN_REPLAY_LEN {
+        return Err(ReplayError::Truncated {
+            offset: data.len(),
+            len: data.len(),
         });
     }
-
-    let magic = [section0[0], section0[1], section0[2], section0[3]];
-    if &magic != format::MAGIC_MODERN && &magic != format::MAGIC_LEGACY {
-        return Err(ReplayError::InvalidMagic(magic));
-    }
-
     Ok(())
+}
+
+fn validate_magic(section0: &[u8]) -> Result<()> {
+    match section0.get(..4) {
+        Some(m) if m == format::MAGIC_MODERN || m == format::MAGIC_LEGACY => Ok(()),
+        _ => Err(ReplayError::NotAReplay("missing replay identifier")),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn fixture(name: &str) -> Vec<u8> {
+        let path = format!("{}/../../tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read(&path).unwrap()
+    }
+
     #[test]
-    fn test_parse_too_short() {
+    fn test_parse_tiny_input_returns_not_a_replay() {
         let result = parse(&[0u8; 10]);
-        assert!(matches!(result, Err(ReplayError::TooShort { .. })));
+        assert!(matches!(result, Err(ReplayError::NotAReplay(_))));
+    }
+
+    #[test]
+    fn test_parse_text_file_returns_not_a_replay_with_sane_message() {
+        // Used to fail with "expected at least 1631854720 bytes": the text was
+        // read as a section envelope.
+        let text = b"This is a plain text file, definitely not a StarCraft replay.\n";
+        let err = parse(text).unwrap_err();
+        assert!(matches!(err, ReplayError::NotAReplay(_)));
+        assert_eq!(err.code(), "NOT_A_REPLAY");
+        assert_eq!(
+            err.to_string(),
+            "not a StarCraft: Brood War replay (missing replay identifier)"
+        );
+    }
+
+    #[test]
+    fn test_parse_truncated_fixture_returns_truncated() {
+        let data = fixture("larva_vs_mini.rep");
+        for cut in [40, 2_000, data.len() / 2] {
+            let err = parse(&data[..cut]).unwrap_err();
+            assert!(
+                matches!(err, ReplayError::Truncated { len, .. } if len == cut)
+                    || err.code() == "CORRUPT",
+                "cut at {cut}: {err}"
+            );
+            let msg = err.to_string();
+            assert!(msg.len() < 120, "message too long: {msg}");
+        }
+        let err = parse(&data[..40]).unwrap_err();
+        assert_eq!(err.code(), "TRUNCATED");
+    }
+
+    #[test]
+    fn test_parse_magic_only_returns_truncated() {
+        let mut data = vec![0u8; 16];
+        data[12..16].copy_from_slice(format::MAGIC_MODERN);
+        let err = parse(&data).unwrap_err();
+        assert!(matches!(err, ReplayError::Truncated { .. }), "{err}");
     }
 }
