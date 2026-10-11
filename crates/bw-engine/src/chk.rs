@@ -14,6 +14,24 @@ impl ChkSection<'_> {
     }
 }
 
+fn read_tag(data: &[u8], off: usize) -> Option<[u8; 4]> {
+    data.get(off..off.checked_add(4)?)?.try_into().ok()
+}
+
+/// Read a little-endian u16 at `off`, or `None` if out of bounds.
+pub(crate) fn read_u16(data: &[u8], off: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        data.get(off..off.checked_add(2)?)?.try_into().ok()?,
+    ))
+}
+
+/// Read a little-endian u32 at `off`, or `None` if out of bounds.
+pub(crate) fn read_u32(data: &[u8], off: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        data.get(off..off.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
 /// Parse all tag-length-value sections from raw CHK bytes.
 ///
 /// Format: repeating `[4-byte ASCII tag][u32 LE length][length bytes data]`.
@@ -22,26 +40,15 @@ pub fn parse_sections(data: &[u8]) -> Result<Vec<ChkSection<'_>>> {
     let mut sections = Vec::new();
     let mut pos = 0;
 
-    while pos + 8 <= data.len() {
-        let tag: [u8; 4] = data[pos..pos + 4].try_into().unwrap();
-        let len = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap()) as usize;
+    while let (Some(tag), Some(len)) = (read_tag(data, pos), read_u32(data, pos + 4)) {
         pos += 8;
-
-        if pos + len > data.len() {
-            // Truncated section — take what's available (some maps do this).
-            let available = data.len() - pos;
-            sections.push(ChkSection {
-                tag,
-                data: &data[pos..pos + available],
-            });
-            break;
-        }
-
+        let end = pos.saturating_add(len as usize).min(data.len());
+        // A truncated final section keeps whatever is available (some maps do this).
         sections.push(ChkSection {
             tag,
-            data: &data[pos..pos + len],
+            data: &data[pos..end],
         });
-        pos += len;
+        pos = end;
     }
 
     Ok(sections)
